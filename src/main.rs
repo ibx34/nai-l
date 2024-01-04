@@ -57,8 +57,7 @@ where
 {
     pub ast: Peekable<A>,
     pub ret: Vec<Expr>,
-    // TODO: This will be useful later
-    pub r#ref: HashMap<String, ()>
+    pub r#ref: HashMap<String, ()>,
 }
 
 impl<'a, A> ASTParse<'a, A>
@@ -91,14 +90,12 @@ where
             make_func: false
         };
 
-        // FAILS??
         let Some(Expr::Identifier(ident)) = self.parse_identifier() else {
             return res
         };
         assert!(self.ast.next().is_some());
 
-        // This is just a type, not a named type.
-        if ["String"].contains(&ident.to_string().as_ref()) {
+        if ["str"].contains(&ident.to_string().as_ref()) {
             res.identifier_pass = true;
             res.ret = Some(Expr::Identifier(ident));
             return res
@@ -318,7 +315,7 @@ fn main() {
     let mut parser = ASTParse {
         ast: ast.ret.iter().peekable(),
         ret: Vec::new(),
-        r#ref: HashMap::new()
+        r#ref: HashMap::new(),
     };
     parser.parse_all();
     println!("{:#?}", parser.ret);
