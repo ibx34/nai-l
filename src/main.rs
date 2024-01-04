@@ -95,7 +95,7 @@ where
         };
         assert!(self.ast.next().is_some());
 
-        if ["str"].contains(&ident.to_string().as_ref()) {
+        if ["String"].contains(&ident.to_string().as_ref()) {
             res.identifier_pass = true;
             res.ret = Some(Expr::Identifier(ident));
             return res
