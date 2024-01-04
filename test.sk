@@ -1,2 +1,5 @@
-regularOldFunction :: String = "Hello, World!"
-main :: String = regularOldFunction
+function :: a String = a
+
+regularOldAssignment :: String = "Hello, World!"
+
+main :: String = regularOldAssignment

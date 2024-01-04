@@ -23,6 +23,32 @@ pub enum Expr {
         // After the =
         right: Box<Expr>,
     },
+    /// Some SIMPLE SIMPLE SIMPLE!! rules for function delcaration
+    /// To avoid it being confused for assignment--to the parser, not you--ALL functions
+    /// must have at least ONE named type and ONE non-named type in its type list. 
+    /// This stems from the idea that for it to be a function it must 
+    ///     1. take some sort of input and
+    ///     2. it must return some sort of output based on the input
+    /// If it only meets #2 of the self-evident truths then it is just assigning a named variable
+    FunctionAssignment {
+        visibility: (),
+        left: LeftSideOfFunctionAssignment,
+        right: Box<Expr>
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct LeftSideOfFunctionAssignment {
+    name: Box<Expr>,
+    type_list: Vec<ParseTyRes>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct ParseTyRes {
+    pub identifier_pass: bool,
+    pub ret: Option<Expr>,
+    pub named_type_for_parameters: Option<Expr>,
+    pub make_func: bool,
 }
 
 pub struct ASTParse<'a, A>
@@ -57,11 +83,42 @@ where
         true
     }
 
+    pub fn parse_type(&mut self, asc: String) -> ParseTyRes {
+        let mut res = ParseTyRes {
+            identifier_pass: false,
+            ret: None,
+            named_type_for_parameters: None,
+            make_func: false
+        };
+
+        // FAILS??
+        let Some(Expr::Identifier(ident)) = self.parse_identifier() else {
+            return res
+        };
+        assert!(self.ast.next().is_some());
+
+        // This is just a type, not a named type.
+        if ["String"].contains(&ident.to_string().as_ref()) {
+            res.identifier_pass = true;
+            res.ret = Some(Expr::Identifier(ident));
+            return res
+        }
+
+        // Add to refs
+        self.r#ref.insert(ident.to_string(), ());
+
+        // TODO: Check if what is here is some special keyword or not
+        res.make_func = true;
+        res.named_type_for_parameters = Some(Expr::Identifier(ident));
+        res.ret = self.parse_type(asc).ret;
+        return res;
+    }
+
     pub fn parse_identifier(&mut self) -> Option<Expr> {
-        if let Some(identifier) = self.ast.peek()
+        let peeked = self.ast.peek();
+        if let Some(identifier) = peeked
             && let AstItem::Identifier(ident) = identifier.to_owned()
         {
-            assert!(self.ast.next().is_some());
             return Some(Expr::Identifier(ident.to_string()));
         }
         None
@@ -73,18 +130,31 @@ where
         let _ident @ AstItem::Identifier(ident) = identifier else {
             return None;
         };
-        let assignment_ty = self.parse_identifier()?;
+        let assignment_ty = self.parse_type(ident.to_string());
+        // Handle when we notice that there is named types (i.e. more than one parameter that is named.)
         if self.expect_following(vec![AstItem::Eq], true)
             && let Some(peeked) = self.ast.peek()
         {
+
             let peeked = peeked.to_owned();
             let Some(right) = self.parse_expr(peeked) else {
                 return None;
             };
 
+            if assignment_ty.make_func {
+                return Some(Expr::FunctionAssignment {
+                    visibility: (),
+                    left: LeftSideOfFunctionAssignment {
+                        name: Box::new(Expr::Identifier(ident.to_string())),
+                    type_list: vec![assignment_ty],
+                    },
+                    right: Box::new(right)
+                })
+            }
+
             let assignment = Expr::Assignment {
                 visibility: (),
-                typed: Box::new(assignment_ty),
+                typed: Box::new(assignment_ty.ret?),
                 left: Box::new(Expr::Identifier(ident.to_string())),
                 right: Box::new(right),
             };
@@ -101,13 +171,14 @@ where
             },
             a @ AstItem::Identifier(ident) => {
                 if self.r#ref.contains_key(&ident.to_string()) {
+                    self.r#ref.remove(&ident.to_string());
                     return self.parse_identifier();
                 }
                 assert!(self.ast.next().is_some());
                 // We know that it will be an assignment because right now that
                 // is the only thing that has two colons that follow an identifier
                 if self.expect_following(vec![AstItem::Colon, AstItem::Colon], true) {
-                    let pa = self.parse_assignment(a);
+                    let pa: Option<Expr> = self.parse_assignment(a);
                     return pa;
                 }
                 None
@@ -244,12 +315,11 @@ fn main() {
         ret: Vec::new(),
     };
     ast.determine_all();
-    println!("{:?}\n\n", ast.ret);
     let mut parser = ASTParse {
         ast: ast.ret.iter().peekable(),
         ret: Vec::new(),
         r#ref: HashMap::new()
     };
     parser.parse_all();
-    println!("{:?}", parser.ret);
+    println!("{:#?}", parser.ret);
 }
