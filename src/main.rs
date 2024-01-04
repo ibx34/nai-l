@@ -10,7 +10,7 @@ use std::{
     process::id,
 };
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Expr {
     Identifier(String),
     Assignment {
@@ -37,13 +37,13 @@ pub enum Expr {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct LeftSideOfFunctionAssignment {
     name: Box<Expr>,
     type_list: Vec<ParseTyRes>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct ParseTyRes {
     pub identifier_pass: bool,
     pub ret: Option<Expr>,
@@ -82,7 +82,7 @@ where
         true
     }
 
-    pub fn parse_type(&mut self, asc: String) -> ParseTyRes {
+    pub fn parse_type(&mut self) -> ParseTyRes {
         let mut res = ParseTyRes {
             identifier_pass: false,
             ret: None,
@@ -107,7 +107,7 @@ where
         // TODO: Check if what is here is some special keyword or not
         res.make_func = true;
         res.named_type_for_parameters = Some(Expr::Identifier(ident));
-        res.ret = self.parse_type(asc).ret;
+        res.ret = self.parse_type().ret;
         return res;
     }
 
@@ -127,8 +127,21 @@ where
         let _ident @ AstItem::Identifier(ident) = identifier else {
             return None;
         };
-        let assignment_ty = self.parse_type(ident.to_string());
-        // Handle when we notice that there is named types (i.e. more than one parameter that is named.)
+        let assignment_ty = self.parse_type();
+
+        let mut func_types = Vec::from(&[assignment_ty.to_owned()]);
+        let arrow = self.expect_following(vec![AstItem::Dash, AstItem::GreaterThan], true);
+        if arrow {
+            while let Some(c) = self.ast.peek() {
+                if *c == &AstItem::Eq {
+                    break;
+                }
+                println!("{arrow:?}");
+                let _ = self.expect_following(vec![AstItem::Dash, AstItem::GreaterThan], true);
+                func_types.push(self.parse_type());
+            }
+        }
+
         if self.expect_following(vec![AstItem::Eq], true)
             && let Some(peeked) = self.ast.peek()
         {
@@ -139,14 +152,18 @@ where
             };
 
             if assignment_ty.make_func {
-                return Some(Expr::FunctionAssignment {
-                    visibility: (),
-                    left: LeftSideOfFunctionAssignment {
-                        name: Box::new(Expr::Identifier(ident.to_string())),
-                    type_list: vec![assignment_ty],
-                    },
-                    right: Box::new(right)
-                })
+                println!("Make func");
+            
+    
+                    return Some(Expr::FunctionAssignment {
+                        visibility: (),
+                        left: LeftSideOfFunctionAssignment {
+                            name: Box::new(Expr::Identifier(ident.to_string())),
+                        type_list: func_types,
+                        },
+                        right: Box::new(right)
+                    })
+                
             }
 
             let assignment = Expr::Assignment {
@@ -206,6 +223,9 @@ where
 pub enum AstItem<'a> {
     Junk(Option<char>),
     Plus,
+    Dash,
+    GreaterThan,
+    LessThan,
     Dot,
     Eq,
     Colon,
@@ -267,6 +287,9 @@ where
                 return Some(AstItem::Junk(None));
             }
             '+' => return Some(AstItem::Plus),
+            '>' => return Some(AstItem::GreaterThan),
+            '<' => return Some(AstItem::LessThan),
+            '-' => return Some(AstItem::Dash),
             '.' => return Some(AstItem::Dot),
             '=' => return Some(AstItem::Eq),
             ':' => return Some(AstItem::Colon),
@@ -312,6 +335,7 @@ fn main() {
         ret: Vec::new(),
     };
     ast.determine_all();
+    println!("{:?}", ast.ret);
     let mut parser = ASTParse {
         ast: ast.ret.iter().peekable(),
         ret: Vec::new(),

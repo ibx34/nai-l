@@ -1,4 +1,4 @@
-function :: a String = a
+function :: a String -> String = a
 
 regularOldAssignment :: String = "Hello, World!"
 
