@@ -1,6 +1,8 @@
 #![feature(let_chains)]
+#![allow(temporary_cstring_as_ptr)]
 #![feature(iter_advance_by)]
 #![feature(box_into_inner)]
+pub mod cg;
 use std::{
     borrow::{Borrow, Cow},
     collections::{binary_heap::PeekMut, HashMap},
@@ -8,7 +10,16 @@ use std::{
     fmt::Debug,
     iter::Peekable,
     process::id,
+    ptr::null_mut
 };
+use llvm_sys::core::{LLVMModuleCreateWithNameInContext,LLVMCreateBuilderInContext,LLVMContextCreate, LLVMPrintModuleToFile};
+
+use crate::cg::{Cursor, CodeGen};
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum Node {
+    Expr(Expr)
+}
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Expr {
@@ -56,7 +67,7 @@ where
     A: Iterator<Item = &'a AstItem<'a>> + Debug,
 {
     pub ast: Peekable<A>,
-    pub ret: Vec<Expr>,
+    pub ret: Vec<Node>,
     pub r#ref: HashMap<String, ()>,
 }
 
@@ -136,8 +147,8 @@ where
                 if *c == &AstItem::Eq {
                     break;
                 }
-                println!("{arrow:?}");
-                let _ = self.expect_following(vec![AstItem::Dash, AstItem::GreaterThan], true);
+                // This is just to advance and expect? The result really doesnt matter for right now...
+                self.expect_following(vec![AstItem::Dash, AstItem::GreaterThan], true);
                 func_types.push(self.parse_type());
             }
         }
@@ -152,7 +163,6 @@ where
             };
 
             if assignment_ty.make_func {
-                println!("Make func");
             
     
                     return Some(Expr::FunctionAssignment {
@@ -195,7 +205,7 @@ where
                     let pa: Option<Expr> = self.parse_assignment(a);
                     return pa;
                 }
-                None
+                panic!("Temporary unknown variable {:?}", ident);
             }
             a @ _ => {
                 assert!(self.ast.next().is_some());
@@ -208,7 +218,7 @@ where
             let nai = nai.to_owned();
             match self.parse_expr(nai) {
                 Some(ret) => {
-                    self.ret.push(ret);
+                    self.ret.push(Node::Expr(ret));
                 },
                 None => {}
             }
@@ -335,12 +345,23 @@ fn main() {
         ret: Vec::new(),
     };
     ast.determine_all();
-    println!("{:?}", ast.ret);
+    let mut refs: HashMap<String, ()> = HashMap::new();
+    refs.insert(String::from("String"), ());
+
     let mut parser = ASTParse {
         ast: ast.ret.iter().peekable(),
         ret: Vec::new(),
         r#ref: HashMap::new(),
     };
     parser.parse_all();
-    println!("{:#?}", parser.ret);
+
+    unsafe {
+        let mut cg = CodeGen::init(parser.ret);
+        cg.generate();
+        // let context = LLVMContextCreate();
+        // let module = LLVMModuleCreateWithNameInContext(b"sum\0".as_ptr() as *const _, context);
+        // let builder = LLVMCreateBuilderInContext(context);
+
+        // LLVMPrintModuleToFile(module, cstr!("cbt.ll"), null_mut());
+    }
 }
