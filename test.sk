@@ -1,3 +1,3 @@
-function :: extra_long_name_for_this_arg String -> String = extra_long_name_for_this_arg
-regularOldAssignment :: String = "Hello, World!"
-main :: String = regularOldAssignment
+function :: extra_long_name_for_this_arg std.String -> std.String = extra_long_name_for_this_arg
+regularOldAssignment :: std.String = "Hello, World!"
+main :: std.String = regularOldAssignment

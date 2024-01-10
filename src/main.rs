@@ -3,6 +3,10 @@
 #![feature(iter_advance_by)]
 #![feature(box_into_inner)]
 pub mod cg;
+use llvm_sys::core::{
+    LLVMContextCreate, LLVMCreateBuilderInContext, LLVMModuleCreateWithNameInContext,
+    LLVMPrintModuleToFile,
+};
 use std::{
     borrow::{Borrow, Cow},
     collections::{binary_heap::PeekMut, HashMap},
@@ -10,15 +14,14 @@ use std::{
     fmt::Debug,
     iter::Peekable,
     process::id,
-    ptr::null_mut
+    ptr::null_mut,
 };
-use llvm_sys::core::{LLVMModuleCreateWithNameInContext,LLVMCreateBuilderInContext,LLVMContextCreate, LLVMPrintModuleToFile};
 
-use crate::cg::{Cursor, CodeGen};
+use crate::cg::{CodeGen, Cursor};
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Node {
-    Expr(Expr)
+    Expr(Expr),
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -36,16 +39,16 @@ pub enum Expr {
     },
     /// Some SIMPLE SIMPLE SIMPLE!! rules for function delcaration
     /// To avoid it being confused for assignment--to the parser, not you--ALL functions
-    /// must have at least ONE named type and ONE non-named type in its type list. 
-    /// This stems from the idea that for it to be a function it must 
+    /// must have at least ONE named type and ONE non-named type in its type list.
+    /// This stems from the idea that for it to be a function it must
     ///     1. take some sort of input and
     ///     2. it must return some sort of output based on the input
     /// If it only meets #2 of the self-evident truths then it is just assigning a named variable
     FunctionAssignment {
         visibility: (),
         left: LeftSideOfFunctionAssignment,
-        right: Box<Expr>
-    }
+        right: Box<Expr>,
+    },
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -147,8 +150,7 @@ where
                 if *c == &AstItem::Eq {
                     break;
                 }
-                // This is just to advance and expect? The result really doesnt matter for right now...
-                self.expect_following(vec![AstItem::Dash, AstItem::GreaterThan], true);
+                let _ = self.expect_following(vec![AstItem::Dash, AstItem::GreaterThan], true);
                 func_types.push(self.parse_type());
             }
         }
@@ -162,18 +164,15 @@ where
                 return None;
             };
 
-            if assignment_ty.make_func {
-            
-    
-                    return Some(Expr::FunctionAssignment {
-                        visibility: (),
-                        left: LeftSideOfFunctionAssignment {
-                            name: Box::new(Expr::Identifier(ident.to_string())),
-                        type_list: func_types,
-                        },
-                        right: Box::new(right)
-                    })
-                
+            if assignment_ty.make_func {            
+                return Some(Expr::FunctionAssignment {
+                    visibility: (),
+                    left: LeftSideOfFunctionAssignment {
+                        name: Box::new(Expr::Identifier(ident.to_string())),
+                    type_list: func_types,
+                    },
+                    right: Box::new(right)
+                })
             }
 
             let assignment = Expr::Assignment {
@@ -205,7 +204,7 @@ where
                     let pa: Option<Expr> = self.parse_assignment(a);
                     return pa;
                 }
-                panic!("Temporary unknown variable {:?}", ident);
+                None
             }
             a @ _ => {
                 assert!(self.ast.next().is_some());
@@ -280,6 +279,10 @@ where
         }
         return Some(temp_str);
     }
+    pub fn push_back(&mut self, ast_item: AstItem<'a>) -> Option<AstItem<'a>>{
+        assert!(self.input.next().is_some());
+        return Some(ast_item)
+    }    
     pub fn determine(&mut self, to_determine: char) -> Option<AstItem<'a>> {
         match to_determine {
             '/' => {
@@ -294,16 +297,16 @@ where
                         assert!(self.input.next().is_some());
                     }
                 }
-                return Some(AstItem::Junk(None));
+                return self.push_back(AstItem::Junk(None));
             }
-            '+' => return Some(AstItem::Plus),
-            '>' => return Some(AstItem::GreaterThan),
-            '<' => return Some(AstItem::LessThan),
-            '-' => return Some(AstItem::Dash),
-            '.' => return Some(AstItem::Dot),
-            '=' => return Some(AstItem::Eq),
-            ':' => return Some(AstItem::Colon),
-            a @ ' ' | a @ '\n' => return Some(AstItem::Junk(Some(a))),
+            '+' => self.push_back(AstItem::Plus),
+            '>' => self.push_back(AstItem::GreaterThan),
+            '<' => self.push_back(AstItem::LessThan),
+            '-' => self.push_back(AstItem::Dash),
+            '.' => self.push_back(AstItem::Dot),
+            '=' => self.push_back(AstItem::Eq),
+            ':' => self.push_back(AstItem::Colon),
+            a @ ' ' | a @ '\n' => return self.push_back(AstItem::Junk(Some(a))),
             '"' => {
                 assert!(self.input.next().is_some());
                 let temp_str = self
@@ -329,9 +332,6 @@ where
                 Some(a @ _) => self.ret.push(a),
                 _ => panic!(),
             }
-            if self.input.next().is_none() {
-                break;
-            }
         }
     }
 }
@@ -346,22 +346,24 @@ fn main() {
     };
     ast.determine_all();
     let mut refs: HashMap<String, ()> = HashMap::new();
-    refs.insert(String::from("String"), ());
-
+    
     let mut parser = ASTParse {
         ast: ast.ret.iter().peekable(),
         ret: Vec::new(),
-        r#ref: HashMap::new(),
+        r#ref: refs,
     };
     parser.parse_all();
-
     unsafe {
         let mut cg = CodeGen::init(parser.ret);
-        cg.generate();
+        cg.generate_all();
         // let context = LLVMContextCreate();
         // let module = LLVMModuleCreateWithNameInContext(b"sum\0".as_ptr() as *const _, context);
         // let builder = LLVMCreateBuilderInContext(context);
 
-        // LLVMPrintModuleToFile(module, cstr!("cbt.ll"), null_mut());
+        LLVMPrintModuleToFile(
+            cg.modules.get("std").unwrap().inner_module,
+            std::ffi::CString::new("out.ll").unwrap().as_ptr(),
+            null_mut(),
+        );
     }
 }
