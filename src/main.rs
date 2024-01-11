@@ -14,7 +14,7 @@ use std::{
     fmt::Debug,
     iter::Peekable,
     process::id,
-    ptr::null_mut,
+    ptr::null_mut, path, thread::panicking,
 };
 
 use crate::cg::{CodeGen, Cursor};
@@ -49,6 +49,9 @@ pub enum Expr {
         left: LeftSideOfFunctionAssignment,
         right: Box<Expr>,
     },
+    ModulePath {
+        segmants: Vec<Box<Expr>>
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -59,15 +62,13 @@ pub struct LeftSideOfFunctionAssignment {
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct ParseTyRes {
-    pub identifier_pass: bool,
     pub ret: Option<Expr>,
-    pub named_type_for_parameters: Option<Expr>,
-    pub make_func: bool,
+    pub named: Option<Expr>,
 }
 
 pub struct ASTParse<'a, A>
 where
-    A: Iterator<Item = &'a AstItem<'a>> + Debug,
+    A: Iterator<Item = &'a AstItem<'a>> + Debug + Clone,
 {
     pub ast: Peekable<A>,
     pub ret: Vec<Node>,
@@ -76,19 +77,22 @@ where
 
 impl<'a, A> ASTParse<'a, A>
 where
-    A: Iterator<Item = &'a AstItem<'a>> + Debug,
+    A: Iterator<Item = &'a AstItem<'a>> + Debug + Clone,
 {
     pub fn advance_by(&mut self, n: usize) {
         assert!(self.ast.advance_by(n).is_ok())
     }
     /// Expects by PEEKING not advancing first
-    pub fn expect_following(&mut self, expectants: Vec<AstItem<'a>>, advance: bool) -> bool {
+    pub fn expect_following(&mut self, expectants: Vec<AstItem<'a>>, advance: bool, advance_if_matches: bool) -> bool {
         for e in expectants {
             if let Some(n) = self.ast.peek() {
                 if e != **n {
+                    if advance && !advance_if_matches {
+                        assert!(self.ast.next().is_some());
+                    }
                     return false;
                 }
-                if advance {
+                if advance && advance_if_matches {
                     assert!(self.ast.next().is_some());
                 }
             }
@@ -98,30 +102,23 @@ where
 
     pub fn parse_type(&mut self) -> ParseTyRes {
         let mut res = ParseTyRes {
-            identifier_pass: false,
             ret: None,
-            named_type_for_parameters: None,
-            make_func: false
+            named: None,
         };
+        if let Some(peeked) = self.ast.peek() {
+            let peeked = peeked.to_owned();
+            let Some(l_expr) = self.parse_expr(peeked) else {
+                panic!("Failed to parse expression??? {:?}", self.ast);
+            };
 
-        let Some(Expr::Identifier(ident)) = self.parse_identifier() else {
-            return res
-        };
-        assert!(self.ast.next().is_some());
-
-        if ["String"].contains(&ident.to_string().as_ref()) {
-            res.identifier_pass = true;
-            res.ret = Some(Expr::Identifier(ident));
-            return res
+            // this means we are in a function definition!!!
+            if let Expr::Identifier(ident) = l_expr {
+                res.named = Some(Expr::Identifier(ident));
+                res.ret = self.parse_type().ret;          
+            } else if let module_path @ Expr::ModulePath { .. } = l_expr {
+                res.ret = Some(module_path)
+            }
         }
-
-        // Add to refs
-        self.r#ref.insert(ident.to_string(), ());
-
-        // TODO: Check if what is here is some special keyword or not
-        res.make_func = true;
-        res.named_type_for_parameters = Some(Expr::Identifier(ident));
-        res.ret = self.parse_type().ret;
         return res;
     }
 
@@ -141,30 +138,28 @@ where
         let _ident @ AstItem::Identifier(ident) = identifier else {
             return None;
         };
-        let assignment_ty = self.parse_type();
-
+        let assignment_ty: ParseTyRes = self.parse_type();
         let mut func_types = Vec::from(&[assignment_ty.to_owned()]);
-        let arrow = self.expect_following(vec![AstItem::Dash, AstItem::GreaterThan], true);
+        let arrow = self.expect_following(vec![AstItem::Dash, AstItem::GreaterThan], true, true);
         if arrow {
             while let Some(c) = self.ast.peek() {
                 if *c == &AstItem::Eq {
+                    println!("- HIT EQ!");
                     break;
                 }
-                let _ = self.expect_following(vec![AstItem::Dash, AstItem::GreaterThan], true);
+                self.expect_following(vec![AstItem::Dash, AstItem::GreaterThan], true, true);
                 func_types.push(self.parse_type());
             }
         }
-
-        if self.expect_following(vec![AstItem::Eq], true)
+        if self.expect_following(vec![AstItem::Eq], true, true)
             && let Some(peeked) = self.ast.peek()
         {
-
             let peeked = peeked.to_owned();
             let Some(right) = self.parse_expr(peeked) else {
                 return None;
             };
 
-            if assignment_ty.make_func {            
+            if func_types.len() > 1 {            
                 return Some(Expr::FunctionAssignment {
                     visibility: (),
                     left: LeftSideOfFunctionAssignment {
@@ -182,36 +177,62 @@ where
                 right: Box::new(right),
             };
             self.r#ref.insert(ident.to_string(), ());
+            self.ast.next();
             return Some(assignment)
         }
         None
     }
 
     pub fn parse_expr(&mut self, item: &'a AstItem<'a>) -> Option<Expr> {
-        match item {
+        let ret = match item {
             AstItem::String(string) => {
                 return Some(Expr::Identifier(string.to_string()))
             },
             a @ AstItem::Identifier(ident) => {
-                if self.r#ref.contains_key(&ident.to_string()) {
-                    self.r#ref.remove(&ident.to_string());
-                    return self.parse_identifier();
+                self.ast.next();
+                match self.ast.peek() {
+                    Some(AstItem::Dot) => {
+                        let mut segmants = Vec::from(&[Box::new(Expr::Identifier(ident.to_string()))]);
+                        assert!(self.ast.next().is_some());
+                        while let Some(peeked) = self.ast.peek() {
+                            let peeked = peeked.to_owned();
+                            match peeked {
+                                AstItem::Identifier(identifier) => {
+                                    segmants.push(Box::new(Expr::Identifier(identifier.to_string())));
+                                    self.ast.next();
+                                },
+                                AstItem::Dot => _ = self.ast.next(),
+                                a @ _ => {
+                                    println!("DASH? {:?}", a);
+                                    break;
+                                }
+                            }
+                        }
+                        Some(Expr::ModulePath { segmants })
+                    }
+                    Some(AstItem::Colon) => {
+                        self.ast.next();
+                        if let Some(AstItem::Colon) = self.ast.peek() {
+                            self.ast.next();
+                            self.parse_assignment(a)
+                        } else {
+                            panic!("Uknown colon case");
+                        }
+                    }
+                    _ => {
+                        println!("identifier only");
+                        Some(Expr::Identifier(ident.to_string()))
+                    }
                 }
-                assert!(self.ast.next().is_some());
-                // We know that it will be an assignment because right now that
-                // is the only thing that has two colons that follow an identifier
-                if self.expect_following(vec![AstItem::Colon, AstItem::Colon], true) {
-                    let pa: Option<Expr> = self.parse_assignment(a);
-                    return pa;
-                }
+            }
+            _a @ _ => {
+                self.ast.next();
                 None
             }
-            a @ _ => {
-                assert!(self.ast.next().is_some());
-                None
-            }
-        }
+        };
+        return ret
     }
+
     pub fn parse_all(&mut self) {
         while let Some(nai) = self.ast.peek() {
             let nai = nai.to_owned();
@@ -220,9 +241,6 @@ where
                     self.ret.push(Node::Expr(ret));
                 },
                 None => {}
-            }
-            if self.ast.next().is_none() {
-                break;
             }
         }
     }
@@ -353,6 +371,7 @@ fn main() {
         r#ref: refs,
     };
     parser.parse_all();
+    println!("{:#?}", parser.ret);
     unsafe {
         let mut cg = CodeGen::init(parser.ret);
         cg.generate_all();

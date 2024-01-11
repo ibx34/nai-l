@@ -154,7 +154,6 @@ impl<'a> CodeGen<'a> {
                 right,
             }) => {
                 let assignment_ty = self.visit_ty(typed);
-                println!("{:?}", assignment_ty);
                 let left_side_identifier =
                     CodeGen::get_inner_identifier(*(left.to_owned())).unwrap();
 
@@ -174,7 +173,6 @@ impl<'a> CodeGen<'a> {
                 string
                  */
 
-                println!("{left_side_identifier:?} :: {assignment_ty:?}");
                 // let llvm_type = LLVMCreateType
                 return Some(());
             }
