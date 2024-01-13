@@ -9,40 +9,12 @@ use llvm_sys::{
     LLVMContext,
 };
 
-use crate::{Expr, Node};
+use crate::{parser::{Expr, Node}, utils::Cursor};
 
 macro_rules! cstr {
     ($s:expr) => {
         std::ffi::CString::new($s).unwrap().as_ptr()
     };
-}
-
-#[derive(Debug)]
-pub struct Cursor<T> {
-    pub idx: usize,
-    pub len: usize,
-    pub interior: Vec<T>,
-}
-
-impl<T> Cursor<T> {
-    pub fn init(interior: Vec<T>) -> Self {
-        Self {
-            idx: 0,
-            len: interior.len(),
-            interior,
-        }
-    }
-    pub fn next(&mut self) -> Option<&T> {
-        self.idx += 1;
-        if self.idx == 0 {
-            return self.interior.first();
-        }
-        return self.interior.get(self.idx - 1);
-    }
-    pub fn peek(&mut self) -> Option<&T> {
-        // TODO: Fix why this is how we peek funky
-        return self.interior.get(self.idx);
-    }
 }
 
 pub struct Module<'a> {

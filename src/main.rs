@@ -3,62 +3,29 @@
 #![feature(iter_advance_by)]
 #![feature(box_into_inner)]
 pub mod cg;
+pub mod parser;
+pub mod utils;
+
 use llvm_sys::core::{
     LLVMContextCreate, LLVMCreateBuilderInContext, LLVMModuleCreateWithNameInContext,
     LLVMPrintModuleToFile,
 };
+use parser::LeftSideOfFunctionAssignment;
 use std::{
     borrow::{Borrow, Cow},
     collections::{binary_heap::PeekMut, HashMap},
     f32::consts::E,
     fmt::Debug,
     iter::Peekable,
+    path,
     process::id,
-    ptr::null_mut, path, thread::panicking,
+    ptr::null_mut,
+    thread::panicking,
 };
 
-use crate::cg::{CodeGen, Cursor};
+use crate::parser::{Expr, Node};
 
-#[derive(Debug, PartialEq, Eq, Clone)]
-pub enum Node {
-    Expr(Expr),
-}
-
-#[derive(Debug, PartialEq, Eq, Clone)]
-pub enum Expr {
-    Identifier(String),
-    Assignment {
-        /// TODO: This currently doesnt matter. Future Proofing?
-        visibility: (),
-        // After the ::
-        // Its not optional, really...
-        typed: Box<Expr>,
-        left: Box<Expr>,
-        // After the =
-        right: Box<Expr>,
-    },
-    /// Some SIMPLE SIMPLE SIMPLE!! rules for function delcaration
-    /// To avoid it being confused for assignment--to the parser, not you--ALL functions
-    /// must have at least ONE named type and ONE non-named type in its type list.
-    /// This stems from the idea that for it to be a function it must
-    ///     1. take some sort of input and
-    ///     2. it must return some sort of output based on the input
-    /// If it only meets #2 of the self-evident truths then it is just assigning a named variable
-    FunctionAssignment {
-        visibility: (),
-        left: LeftSideOfFunctionAssignment,
-        right: Box<Expr>,
-    },
-    ModulePath {
-        segmants: Vec<Box<Expr>>
-    }
-}
-
-#[derive(Debug, PartialEq, Eq, Clone)]
-pub struct LeftSideOfFunctionAssignment {
-    name: Box<Expr>,
-    type_list: Vec<ParseTyRes>,
-}
+const RESERVED_KEYWORDS: [&str; 2] = ["extern", "module"];
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct ParseTyRes {
@@ -83,7 +50,12 @@ where
         assert!(self.ast.advance_by(n).is_ok())
     }
     /// Expects by PEEKING not advancing first
-    pub fn expect_following(&mut self, expectants: Vec<AstItem<'a>>, advance: bool, advance_if_matches: bool) -> bool {
+    pub fn expect_following(
+        &mut self,
+        expectants: Vec<AstItem<'a>>,
+        advance: bool,
+        advance_if_matches: bool,
+    ) -> bool {
         for e in expectants {
             if let Some(n) = self.ast.peek() {
                 if e != **n {
@@ -100,7 +72,7 @@ where
         true
     }
 
-    pub fn parse_type(&mut self) -> ParseTyRes {
+    pub fn parse_type(&mut self, p_res: Option<ParseTyRes>) -> ParseTyRes {
         let mut res = ParseTyRes {
             ret: None,
             named: None,
@@ -108,13 +80,22 @@ where
         if let Some(peeked) = self.ast.peek() {
             let peeked = peeked.to_owned();
             let Some(l_expr) = self.parse_expr(peeked) else {
-                panic!("Failed to parse expression??? {:?}", self.ast);
+                panic!("Failed to parse expression???");
             };
 
             // this means we are in a function definition!!!
             if let Expr::Identifier(ident) = l_expr {
-                res.named = Some(Expr::Identifier(ident));
-                res.ret = self.parse_type().ret;          
+                if let Some(previois_res) = p_res
+                    && previois_res.named.is_some()
+                {
+                    res.ret = Some(Expr::Identifier(ident));
+                    res.named = previois_res.named;
+                    return res;
+                } else {
+                    res.named = Some(Expr::Identifier(ident));
+                    let parse_type_again_res = self.parse_type(Some(res.to_owned())).ret;
+                    res.ret = parse_type_again_res;
+                }
             } else if let module_path @ Expr::ModulePath { .. } = l_expr {
                 res.ret = Some(module_path)
             }
@@ -138,7 +119,7 @@ where
         let _ident @ AstItem::Identifier(ident) = identifier else {
             return None;
         };
-        let assignment_ty: ParseTyRes = self.parse_type();
+        let assignment_ty: ParseTyRes = self.parse_type(None);
         let mut func_types = Vec::from(&[assignment_ty.to_owned()]);
         let arrow = self.expect_following(vec![AstItem::Dash, AstItem::GreaterThan], true, true);
         if arrow {
@@ -148,7 +129,7 @@ where
                     break;
                 }
                 self.expect_following(vec![AstItem::Dash, AstItem::GreaterThan], true, true);
-                func_types.push(self.parse_type());
+                func_types.push(self.parse_type(None));
             }
         }
         if self.expect_following(vec![AstItem::Eq], true, true)
@@ -159,15 +140,16 @@ where
                 return None;
             };
 
-            if func_types.len() > 1 {            
-                return Some(Expr::FunctionAssignment {
-                    visibility: (),
-                    left: LeftSideOfFunctionAssignment {
-                        name: Box::new(Expr::Identifier(ident.to_string())),
-                    type_list: func_types,
-                    },
-                    right: Box::new(right)
-                })
+            if func_types.len() > 1 {
+                // return Some(Expr::FunctionAssignment {
+                //     visibility: (),
+                //     left: LeftSideOfFunctionAssignment {
+                //         name: Box::new(Expr::Identifier(ident.to_string())),
+                //         // type_list: func_types,
+                //     },
+                //     right: Box::new(right),
+                // });
+                todo!()
             }
 
             let assignment = Expr::Assignment {
@@ -178,29 +160,29 @@ where
             };
             self.r#ref.insert(ident.to_string(), ());
             self.ast.next();
-            return Some(assignment)
+            return Some(assignment);
         }
         None
     }
 
     pub fn parse_expr(&mut self, item: &'a AstItem<'a>) -> Option<Expr> {
         let ret = match item {
-            AstItem::String(string) => {
-                return Some(Expr::Identifier(string.to_string()))
-            },
+            AstItem::String(string) => return Some(Expr::Identifier(string.to_string())),
             a @ AstItem::Identifier(ident) => {
                 self.ast.next();
                 match self.ast.peek() {
                     Some(AstItem::Dot) => {
-                        let mut segmants = Vec::from(&[Box::new(Expr::Identifier(ident.to_string()))]);
+                        let mut segmants =
+                            Vec::from(&[Box::new(Expr::Identifier(ident.to_string()))]);
                         assert!(self.ast.next().is_some());
                         while let Some(peeked) = self.ast.peek() {
                             let peeked = peeked.to_owned();
                             match peeked {
                                 AstItem::Identifier(identifier) => {
-                                    segmants.push(Box::new(Expr::Identifier(identifier.to_string())));
+                                    segmants
+                                        .push(Box::new(Expr::Identifier(identifier.to_string())));
                                     self.ast.next();
-                                },
+                                }
                                 AstItem::Dot => _ = self.ast.next(),
                                 a @ _ => {
                                     println!("DASH? {:?}", a);
@@ -220,9 +202,8 @@ where
                         }
                     }
                     _ => {
-                        println!("identifier only");
                         Some(Expr::Identifier(ident.to_string()))
-                    }
+                    },
                 }
             }
             _a @ _ => {
@@ -230,7 +211,7 @@ where
                 None
             }
         };
-        return ret
+        return ret;
     }
 
     pub fn parse_all(&mut self) {
@@ -239,7 +220,7 @@ where
             match self.parse_expr(nai) {
                 Some(ret) => {
                     self.ret.push(Node::Expr(ret));
-                },
+                }
                 None => {}
             }
         }
@@ -297,10 +278,10 @@ where
         }
         return Some(temp_str);
     }
-    pub fn push_back(&mut self, ast_item: AstItem<'a>) -> Option<AstItem<'a>>{
+    pub fn push_back(&mut self, ast_item: AstItem<'a>) -> Option<AstItem<'a>> {
         assert!(self.input.next().is_some());
-        return Some(ast_item)
-    }    
+        return Some(ast_item);
+    }
     pub fn determine(&mut self, to_determine: char) -> Option<AstItem<'a>> {
         match to_determine {
             '/' => {
@@ -346,7 +327,9 @@ where
             let nc = nc.to_owned();
             match self.determine(nc) {
                 // Discard the junk items. The entire system could be reworked to be way better but who cares. Maybe use a Result type instead of Option but who knows im not that smart
+                //Some(a @ AstItem::Junk(Some(' '))) => self.ret.push(a),
                 Some(AstItem::Junk(_)) => {}
+
                 Some(a @ _) => self.ret.push(a),
                 _ => panic!(),
             }
@@ -363,26 +346,28 @@ fn main() {
         ret: Vec::new(),
     };
     ast.determine_all();
-    let mut refs: HashMap<String, ()> = HashMap::new();
-    
-    let mut parser = ASTParse {
-        ast: ast.ret.iter().peekable(),
-        ret: Vec::new(),
-        r#ref: refs,
-    };
+    println!("{:?}", ast.ret);
+    let mut parser = parser::Parser::init(ast.ret.iter().collect::<Vec<&AstItem<'_>>>());
     parser.parse_all();
     println!("{:#?}", parser.ret);
-    unsafe {
-        let mut cg = CodeGen::init(parser.ret);
-        cg.generate_all();
-        // let context = LLVMContextCreate();
-        // let module = LLVMModuleCreateWithNameInContext(b"sum\0".as_ptr() as *const _, context);
-        // let builder = LLVMCreateBuilderInContext(context);
+    // let mut parser = ASTParse {
+    //     ast: ast.ret.iter().peekable(),
+    //     ret: Vec::new(),
+    //     r#ref: refs,
+    // };
+    // parser.parse_all();
+    // println!("{:#?}", parser.ret);
+    // unsafe {
+    //     let mut cg = CodeGen::init(parser.ret);
+    //     cg.generate_all();
+    //     // let context = LLVMContextCreate();
+    //     // let module = LLVMModuleCreateWithNameInContext(b"sum\0".as_ptr() as *const _, context);
+    //     // let builder = LLVMCreateBuilderInContext(context);
 
-        LLVMPrintModuleToFile(
-            cg.modules.get("std").unwrap().inner_module,
-            std::ffi::CString::new("out.ll").unwrap().as_ptr(),
-            null_mut(),
-        );
-    }
+    //     LLVMPrintModuleToFile(
+    //         cg.modules.get("std").unwrap().inner_module,
+    //         std::ffi::CString::new("out.ll").unwrap().as_ptr(),
+    //         null_mut(),
+    //     );
+    // }
 }
