@@ -9,7 +9,10 @@ use llvm_sys::{
     LLVMContext,
 };
 
-use crate::{parser::{Expr, Node}, utils::Cursor};
+use crate::{
+    parser::{Expr, Node},
+    utils::Cursor,
+};
 
 macro_rules! cstr {
     ($s:expr) => {

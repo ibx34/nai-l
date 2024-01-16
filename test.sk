@@ -1,3 +1,2 @@
-// HELLO!
-hello_world_func :: std.String -> std.String = "Hello, world1!"
-just_var :: std.String = "Hello, world2!"
+baby :: std.String -> std.String = "String, literal!"
+hello_name :: name std.String -> std.String = name

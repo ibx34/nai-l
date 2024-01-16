@@ -20,15 +20,14 @@ impl<T> Cursor<T> {
         self.idx += 1;
         if self.idx == 0 {
             return self.interior.first();
-        } else if self.idx > self.interior.len() {
-            return None
         }
         return self.interior.get(self.idx);
     }
+    pub fn advance_by(&mut self, n: usize) -> bool {
+        self.idx += n;
+        return self.interior.get(self.idx).is_some();
+    }
     pub fn peek(&mut self) -> Option<&T> {
-        if self.idx == 0 {
-            return self.interior.first()
-        }
         // TODO: Fix why this is how we peek funky
         return self.interior.get(self.idx + 1);
     }
