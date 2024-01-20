@@ -23,7 +23,7 @@ use std::{
     thread::panicking,
 };
 
-use crate::parser::{Expr, Node};
+use crate::{parser::{Expr, Node}, cg::CodeGen};
 
 const RESERVED_KEYWORDS: [&str; 2] = ["extern", "module"];
 
@@ -36,6 +36,10 @@ pub enum AstItem<'a> {
     LessThan,
     Dot,
     Eq,
+    OpenParenthesis,
+    CloseParenthesis,
+    OpenSquare,
+    CloseSquare,
     Colon,
     Identifier(Cow<'a, str>),
     String(Cow<'a, str>),
@@ -105,6 +109,10 @@ where
             '.' => self.push_back(AstItem::Dot),
             '=' => self.push_back(AstItem::Eq),
             ':' => self.push_back(AstItem::Colon),
+            '(' => self.push_back(AstItem::OpenParenthesis),
+            ')' => self.push_back(AstItem::CloseParenthesis),
+            '[' => self.push_back(AstItem::OpenSquare),
+            ']' => self.push_back(AstItem::CloseSquare),
             a @ ' ' | a @ '\n' => return self.push_back(AstItem::Junk(Some(a))),
             '"' => {
                 assert!(self.input.next().is_some());
@@ -151,25 +159,13 @@ fn main() {
     parser.parse_all();
     println!("{:#?}", parser.ret);
 
-    
-    // let mut parser = ASTParse {
-    //     ast: ast.ret.iter().peekable(),
-    //     ret: Vec::new(),
-    //     r#ref: refs,
-    // };
-    // parser.parse_all();
-    // println!("{:#?}", parser.ret);
-    // unsafe {
-    //     let mut cg = CodeGen::init(parser.ret);
-    //     cg.generate_all();
-    //     // let context = LLVMContextCreate();
-    //     // let module = LLVMModuleCreateWithNameInContext(b"sum\0".as_ptr() as *const _, context);
-    //     // let builder = LLVMCreateBuilderInContext(context);
+    unsafe {
+        let mut cg = CodeGen::init(parser.ret);
+        let _ = cg.generate_all();
+        // let context = LLVMContextCreate();
+        // let module = LLVMModuleCreateWithNameInContext(b"sum\0".as_ptr() as *const _, context);
+        // let builder = LLVMCreateBuilderInContext(context);
 
-    //     LLVMPrintModuleToFile(
-    //         cg.modules.get("std").unwrap().inner_module,
-    //         std::ffi::CString::new("out.ll").unwrap().as_ptr(),
-    //         null_mut(),
-    //     );
-    // }
+        cg.print_ir();
+    }
 }

@@ -1,4 +1,4 @@
-use std::net::UdpSocket;
+use std::{collections::HashMap, hash::Hash, net::UdpSocket};
 
 use llvm_sys::orc2::ee;
 
@@ -38,18 +38,21 @@ pub enum Expr {
     ModulePath {
         segmants: Vec<Box<Expr>>,
     },
-}
-
-#[derive(Debug, PartialEq, Eq, Clone)]
-pub struct SupposedType {
-    pub has_name: Option<Expr>,
-    pub ret: Option<Expr>,
+    FunctionCall {
+        to_call: Box<Expr>,
+        arguments: Vec<Box<Expr>>,
+        long_form: bool,
+    },
+    TypeParam {
+        has_name: Option<Box<Expr>>,
+        ret: Option<Box<Expr>>
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct LeftSideOfFunctionAssignment {
     pub name: Box<Expr>,
-    pub type_list: Vec<SupposedType>,
+    pub type_list: Vec<Box<Expr>>,
 }
 
 #[derive(Debug)]
@@ -76,8 +79,41 @@ impl<'a> Parser<'a> {
         }
     }
 
+    pub fn parse_function_call(&mut self, current: &'a AstItem) -> Option<Expr> {
+        match current {
+            // long form
+            AstItem::OpenParenthesis => {
+                let next = self.ast.next().unwrap().to_owned();
+                let Some(Expr::Identifier(to_call)) = self.parse_expr(next) else {
+                    panic!("Expected an identiifer to follow the first '(");
+                };
+                let mut collected: Vec<Box<Expr>> = Vec::new();
+                while let Some(current) = self.ast.current() {
+                    let current = current.to_owned();
+                    if let AstItem::CloseParenthesis = current {
+                        self.ast.next();
+                        break;
+                    } else {
+                        let Some(parsed) = self.parse_expr(current) else {
+                            break;
+                        };
+                        collected.push(Box::new(parsed));
+                        continue;
+                    }
+                }
+                println!("Calling {:?} with the arguments {:?}", to_call, collected);
+                return Some(Expr::FunctionCall {
+                    to_call: Box::new(Expr::Identifier(to_call)),
+                    arguments: collected,
+                    long_form: true,
+                });
+            }
+            _ => todo!(),
+        }
+    }
+
     pub fn parse_assignment(&mut self, identifier: Expr) -> Option<Expr> {
-        let mut type_list: Vec<SupposedType> = Vec::new();
+        let mut type_list: Vec<Box<Expr>> = Vec::new();
         while let Some(current) = self.ast.current() {
             let current = current.to_owned();
             if let AstItem::Eq = current {
@@ -99,16 +135,16 @@ impl<'a> Parser<'a> {
                     };
                     let peeked = peeked.to_owned();
 
-                    let type_after_name = self.parse_expr(peeked);
-                    type_list.push(SupposedType {
-                        has_name: Some(Expr::Identifier(identifier)),
-                        ret: type_after_name,
-                    });
+                    let type_after_name = self.parse_expr(peeked).unwrap();
+                    type_list.push(Box::new(Expr::TypeParam {
+                        has_name: Some(Box::new(Expr::Identifier(identifier))),
+                        ret: Some(Box::new(type_after_name)),
+                    }));
                 } else if let a @ Expr::ModulePath { .. } = parsed {
-                    type_list.push(SupposedType {
+                    type_list.push(Box::new(Expr::TypeParam {
                         has_name: None,
-                        ret: Some(a),
-                    });
+                        ret: Some(Box::new(a)),
+                    }));
                 }
             }
         }
@@ -121,8 +157,12 @@ impl<'a> Parser<'a> {
             if type_list.len() > 1
                 || type_list
                     .iter()
-                    .filter(|e| e.has_name.is_some())
-                    .collect::<Vec<&SupposedType>>()
+                    .filter(|e| if let Expr::TypeParam { has_name, .. } = *(*(e.to_owned())).to_owned() {
+                        has_name.is_some()
+                    } else {
+                        false
+                    })
+                    .collect::<Vec<&Box<Expr>>>()
                     .len()
                     > 0
             {
@@ -135,9 +175,12 @@ impl<'a> Parser<'a> {
                     right: Box::new(right_side),
                 });
             }
+            let Expr::TypeParam { ret, .. } = *(type_list.first().unwrap().to_owned()) else {
+                panic!("!!");
+            };
             return Some(Expr::Assignment {
                 visibility: (),
-                typed: Box::new(type_list.get(0).unwrap().ret.as_ref().unwrap().to_owned()),
+                typed: Box::new(*ret.unwrap()),
                 left: Box::new(identifier),
                 right: Box::new(right_side),
             });
@@ -147,6 +190,7 @@ impl<'a> Parser<'a> {
 
     pub fn parse_expr(&mut self, parse: &'a AstItem<'a>) -> Option<Expr> {
         match parse {
+            a @ AstItem::OpenParenthesis => self.parse_function_call(a),
             AstItem::Identifier(identifier) => {
                 let ident = identifier.to_string();
                 // Here we are still at the first very first identifier

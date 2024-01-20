@@ -1,9 +1,9 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, ptr::null_mut};
 
 use llvm_sys::{
     core::{
         LLVMAddFunction, LLVMContextCreate, LLVMCreateBuilderInContext, LLVMFunctionType,
-        LLVMInt32Type, LLVMModuleCreateWithNameInContext, LLVMPointerType, LLVMVoidType,
+        LLVMInt32Type, LLVMModuleCreateWithNameInContext, LLVMPointerType, LLVMVoidType, LLVMPrintModuleToFile,
     },
     prelude::{LLVMBuilderRef, LLVMContextRef, LLVMModuleRef, LLVMTypeRef, LLVMValueRef},
     LLVMContext,
@@ -65,6 +65,7 @@ pub struct CodeGen<'a> {
     pub modules: HashMap<&'a str, Module<'a>>,
     pub context: LLVMContextRef,
     pub builder: LLVMBuilderRef,
+    pub current_module: &'a str,
 }
 
 impl<'a> CodeGen<'a> {
@@ -83,85 +84,94 @@ impl<'a> CodeGen<'a> {
         let mut cursor = Cursor::init(nodes);
         // remove when you feel like handling functions in LLVM
         cursor.next();
-
+        
         Self {
             cursor,
             modules,
             context,
             builder,
+            // SAFETY: These two WILL exist.
+            current_module: "main"
         }
+    }
+
+    pub fn get_current_module(&mut self) -> &mut Module<'a> {
+        self.modules.get_mut(self.current_module).unwrap()
+    }
+
+    pub fn try_to_get_type(&self, module: &str, ty: &str) -> Option<LLVMTypeRef> {
+        let Some(module) = self.modules.get(module) else {
+            return None
+        };
+        let Some(ty) = module.types.get(ty) else {
+            return None
+        };
+        Some(ty.to_owned())
     }
 
     pub fn get_inner_identifier(expr: Expr) -> Option<String> {
         if let Expr::Identifier(ident) = expr {
             return Some(ident);
-        }
+        } 
         None
     }
 
-    pub fn visit_ty(&mut self, ty: Box<Expr>) -> Option<LLVMTypeRef> {
-        let Some(possible_type) = CodeGen::get_inner_identifier(*(ty.to_owned())) else {
-            return None;
-        };
-        let split_up = possible_type.split("::").collect::<Vec<&str>>();
-        // its reasonable to expect the last item in the vector will be the actual item we want.
-        let Some(type_name) = split_up.last() else {
-            return None;
-        };
-        let Some(module_name) = split_up.first() else {
-            return None;
-        };
-        let Some(module) = self.modules.get(*module_name) else {
-            return None;
-        };
-        let Some(ty) = module.types.get(*type_name) else {
-            return None;
-        };
-        return Some(*ty);
-    }
-
-    pub fn generate(&mut self, expr: Node) -> Option<()> {
-        match expr {
-            Node::Expr(Expr::Assignment {
-                visibility,
-                typed,
-                left,
-                right,
-            }) => {
-                let assignment_ty = self.visit_ty(typed);
-                let left_side_identifier =
-                    CodeGen::get_inner_identifier(*(left.to_owned())).unwrap();
-
-                /*
-
-                                let mut value = left.to_owned();
-                value.push('\0');
-
-                let alloc = LLVMBuildAlloca(
-                    self.builder,
-                    LLVMArrayType(
-                        LLVMInt8Type(),
-                        std::mem::size_of_val(value.as_bytes()) as u32,
-                    ),
-                    cstr!(""),
-                );
-                string
-                 */
-
-                // let llvm_type = LLVMCreateType
-                return Some(());
+    pub fn generate_type(&mut self, expr: Box<Expr>) -> Result<LLVMTypeRef, String> {
+        let mut c_mod = self.get_current_module();
+        match *expr {
+            Expr::Identifier(ident) => {
+                if let Some(possible_predefined_type) = c_mod.types.get(ident.as_str()) {
+                    let pt = possible_predefined_type.to_owned();
+                    return Ok(pt)
+                }
+                return Err(format!("Could not find the type {:?}", ident))
+            },
+            Expr::TypeParam { ret , ..} => {
+                let Some(ret) = ret else {
+                    return Err(String::from("Expected 'ret' to be Some"));
+                };
+                return Ok(self.generate_type(ret)?);
+            },
+            Expr::ModulePath { segmants } => {
+                let all_unboxed = segmants.iter().map_while(|e: &Box<Expr>| Some(*(e.to_owned()))).collect::<Vec<Expr>>();
+                let module = CodeGen::get_inner_identifier(all_unboxed.first().unwrap().to_owned()).unwrap();
+                let expected_type = CodeGen::get_inner_identifier(all_unboxed.last().unwrap().to_owned()).unwrap();
+                
+                let Some(possible_type) = self.try_to_get_type(&module, &expected_type) else {
+                    return Err(format!("Could not find {expected_type:?} in module {module:?}"));
+                };
+                return Ok(possible_type);
             }
-            _ => Some(()),
+            _ => return Err(String::from("Expected something else... TypeParam or Identifier"))
+        }
+    }   
+
+    pub unsafe fn generate(&mut self, node: Node) -> Result<(), String> {
+        match node {
+            Node::Expr(expr) => match expr {
+                Expr::Assignment { visibility, typed, left, right } => {
+                    let at_type = self.generate_type(typed).unwrap();
+                    Ok(())
+                }
+                _ => Ok(())
+            },
         }
     }
 
-    pub fn generate_all(&mut self) {
-        while let Some(node) = self.cursor.peek() {
+    pub unsafe fn generate_all(&mut self) -> Result<(), String> {
+        while let Some(node) = self.cursor.current() {
             let node = node.to_owned();
-            self.generate(node);
-            if self.cursor.next().is_none() {
-                break;
-            }
+            self.generate(node)?;
+            todo!()
         }
+        Ok(())
+    }
+
+    pub unsafe fn print_ir(&'a self) {
+        LLVMPrintModuleToFile(
+            self.modules.get("std").unwrap().inner_module,
+            std::ffi::CString::new("out.ll").unwrap().as_ptr(),
+            null_mut(),
+        );
     }
 }
