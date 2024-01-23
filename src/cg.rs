@@ -196,18 +196,33 @@ impl<'a> CodeGen<'a> {
                     left,
                     right,
                 } => {
-                    let guessed_return_type = left.type_list.iter().find_map(|e| {
-                        let Expr::TypeParam { has_name, ret } = *(e.to_owned()) else {
-                            return None;
-                        };
-                        let has_name = has_name.map(|e| *e);
-                        if has_name.is_none() {
-                            return Some(self.generate_type(ret?, None).unwrap());
-                        }
-                        None
-                    });
-                    println!("{:?}", guessed_return_type);
-                    todo!()
+                    let name_of_func = CodeGen::get_inner_identifier(*left.name).unwrap();
+                    let guessed_return_type = if left.type_list.len() == 0 && &name_of_func == "main" {
+                        // panic!("Function needs to have at least 2 arguments. One named, one return. The return argument is decided by whether or not it is named.");
+                        LLVMVoidType()
+                    } else {
+                        left.type_list.iter().find_map(|e| {
+                            let Expr::TypeParam { has_name, ret } = *(e.to_owned()) else {
+                                return None;
+                            };
+                            let has_name = has_name.map(|e| *e);
+                            if has_name.is_none() {
+                                return Some(self.generate_type(ret?, None).unwrap());
+                            }
+                            None
+                        }).unwrap().0
+                    };
+
+                    let c_mod: &mut Module<'_> = self.get_current_module();
+                    let func_def_ty = LLVMFunctionType(guessed_return_type, [].as_mut_ptr(), 0, 0);
+                    let func_def = LLVMAddFunction(c_mod.inner_module, cstr!(name_of_func), func_def_ty);
+
+                    let blcok = LLVMAppendBasicBlock(func_def, cstr!("entry"));
+                    LLVMPositionBuilderAtEnd(self.builder, blcok);
+
+                    self.generate(Node::Expr(*(right.to_owned())))?;
+                    self.cursor.next();
+                    Ok(CodeGenRes::AllGood)
                 }
                 Expr::Assignment {
                     visibility,
@@ -215,14 +230,6 @@ impl<'a> CodeGen<'a> {
                     left,
                     right,
                 } => {
-                    let c_mod: &mut Module<'_> = self.get_current_module();
-                    let main_ty = LLVMFunctionType(LLVMVoidType(), [].as_mut_ptr(), 0, 0);
-                    let main_func = LLVMAddFunction(c_mod.inner_module, cstr!("test"), main_ty);
-        
-                    let blcok = LLVMAppendBasicBlock(main_func, cstr!("entry"));
-
-                    LLVMPositionBuilderAtEnd(self.builder, blcok);
-
                     let assignment_name = CodeGen::get_inner_identifier(*left).unwrap();
                     let CodeGenRes::NeedsWork(NeedsWork::ConstString { val_ref, size_hint }) =
                         self.generate(Node::Expr(*right))?
@@ -235,7 +242,7 @@ impl<'a> CodeGen<'a> {
                         .unwrap();
 
                     LLVMBuildStore(self.builder, val_ref, at_type.1);
-                    todo!();
+                    Ok(CodeGenRes::AllGood)
                 }
                 Expr::StringLiteral(mut value) => {
                     value.push('\0');
@@ -250,7 +257,10 @@ impl<'a> CodeGen<'a> {
                         size_hint: size,
                     }));
                 }
-                _ => Ok(CodeGenRes::AllGood),
+                _ => {
+                    println!("other");
+                    Ok(CodeGenRes::AllGood)
+                },
             },
         }
     }

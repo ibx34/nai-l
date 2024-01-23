@@ -173,9 +173,9 @@ fn main() {
     parser.parse_all();
     println!("{:#?}", parser.ret);
 
-    // unsafe {
-    //     let mut cg = CodeGen::init(parser.ret);
-    //     cg.generate_all().unwrap();
-    //     cg.print();
-    // }
+    unsafe {
+        let mut cg = CodeGen::init(parser.ret);
+        cg.generate_all().unwrap();
+        cg.print();
+    }
 }
