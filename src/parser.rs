@@ -45,8 +45,8 @@ pub enum Expr {
     },
     TypeParam {
         has_name: Option<Box<Expr>>,
-        ret: Option<Box<Expr>>
-    }
+        ret: Option<Box<Expr>>,
+    },
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -112,39 +112,45 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub fn parse_assignment(&mut self, identifier: Expr) -> Option<Expr> {
+    pub fn parse_assignment(&mut self, identifier: Expr, pass_argument_check: bool, skip_type_list: bool) -> Option<Expr> {
         let mut type_list: Vec<Box<Expr>> = Vec::new();
-        while let Some(current) = self.ast.current() {
-            let current = current.to_owned();
-            if let AstItem::Eq = current {
-                self.ast.next();
-                break;
-            } else if let AstItem::Dash = current {
-                self.ast.next();
-                if let Some(AstItem::GreaterThan) = self.ast.current() {
+        if !skip_type_list {
+            while let Some(current) = self.ast.current() {
+                let current = current.to_owned();
+                if let AstItem::Eq = current {
                     self.ast.next();
-                    continue;
-                }
-            } else {
-                let Some(parsed) = self.parse_expr(current) else {
                     break;
-                };
-                if let Expr::Identifier(identifier) = parsed {
-                    let Some(peeked) = self.ast.current() else {
+                } else if let AstItem::Dash = current {
+                    self.ast.next();
+                    if let Some(AstItem::GreaterThan) = self.ast.current() {
+                        self.ast.next();
+                        continue;
+                    }
+                } else {
+                    let Some(parsed) = self.parse_expr(current) else {
                         break;
                     };
-                    let peeked = peeked.to_owned();
-
-                    let type_after_name = self.parse_expr(peeked).unwrap();
-                    type_list.push(Box::new(Expr::TypeParam {
-                        has_name: Some(Box::new(Expr::Identifier(identifier))),
-                        ret: Some(Box::new(type_after_name)),
-                    }));
-                } else if let a @ Expr::ModulePath { .. } = parsed {
-                    type_list.push(Box::new(Expr::TypeParam {
-                        has_name: None,
-                        ret: Some(Box::new(a)),
-                    }));
+                    if let Expr::Identifier(identifier) = parsed {
+                        let Some(peeked) = self.ast.current() else {
+                            break;
+                        };
+                        let peeked = peeked.to_owned();
+                        if matches!(peeked, AstItem::Identifier(_)) {
+                            type_list.push(Box::new(Expr::TypeParam {
+                                has_name: Some(Box::new(Expr::Identifier(identifier.to_owned()))),
+                                ret: self.parse_expr(peeked).map(|e| Box::new(e)),
+                            }));
+                        }
+                        type_list.push(Box::new(Expr::TypeParam {
+                            has_name: None,
+                            ret: Some(Box::new(Expr::Identifier(identifier))),
+                        }));
+                    } else if let a @ Expr::ModulePath { .. } = parsed {
+                        type_list.push(Box::new(Expr::TypeParam {
+                            has_name: None,
+                            ret: Some(Box::new(a)),
+                        }));
+                    }
                 }
             }
         }
@@ -152,19 +158,21 @@ impl<'a> Parser<'a> {
         if let Some(more) = self.ast.current() {
             let more = more.to_owned();
             let Some(right_side) = self.parse_expr(more) else {
-                panic!("Failed to get right side of assignment to {:?}", identifier);
+                panic!("Failed to get right side of assignment to {:?} ({:?})", identifier, more);
             };
-            if type_list.len() > 1
+            if pass_argument_check || (type_list.len() > 1
                 || type_list
                     .iter()
-                    .filter(|e| if let Expr::TypeParam { has_name, .. } = *(*(e.to_owned())).to_owned() {
-                        has_name.is_some()
-                    } else {
-                        false
+                    .filter(|e| {
+                        if let Expr::TypeParam { has_name, .. } = *(*(e.to_owned())).to_owned() {
+                            has_name.is_some()
+                        } else {
+                            false
+                        }
                     })
                     .collect::<Vec<&Box<Expr>>>()
                     .len()
-                    > 0
+                    > 0)
             {
                 return Some(Expr::FunctionAssignment {
                     visibility: (),
@@ -191,8 +199,15 @@ impl<'a> Parser<'a> {
     pub fn parse_expr(&mut self, parse: &'a AstItem<'a>) -> Option<Expr> {
         match parse {
             a @ AstItem::OpenParenthesis => self.parse_function_call(a),
-            AstItem::Identifier(identifier) => {
+            a @ AstItem::Identifier(identifier) | a @ AstItem::UseOfProtectedIdentifier(identifier) => {
                 let ident = identifier.to_string();
+                let protected = matches!(a, AstItem::UseOfProtectedIdentifier(_)) && &ident == "main";
+                let pass_argument_check = if protected {
+                    // this checks hould pull from a static/const vec of protected identifiers, not just main. temporary.
+                    true
+                } else {
+                    false
+                };
                 // Here we are still at the first very first identifier
                 match self.ast.peek() {
                     // we match against the colon AFTER the identifier but we dont move past it
@@ -201,7 +216,7 @@ impl<'a> Parser<'a> {
                         if self.ast.advance_by(2) {
                             if let Some(AstItem::Colon) = self.ast.current() {
                                 self.ast.next();
-                                return self.parse_assignment(Expr::Identifier(ident));
+                                return self.parse_assignment(Expr::Identifier(ident), pass_argument_check, false);
                             }
                         }
                         return None;
@@ -222,6 +237,12 @@ impl<'a> Parser<'a> {
                             }
                         }
                         return Some(Expr::ModulePath { segmants });
+                    }
+                    Some(AstItem::Eq) if protected => {
+                        // In some cases (like the protected identifier) there may not be any 
+                        // types and such we should handle this function as kind of a "assignment"
+                        self.ast.advance_by(2);
+                        return self.parse_assignment(Expr::Identifier(ident), pass_argument_check, true);
                     }
                     _ => {
                         self.ast.next();

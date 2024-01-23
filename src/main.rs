@@ -23,7 +23,10 @@ use std::{
     thread::panicking,
 };
 
-use crate::{parser::{Expr, Node}, cg::CodeGen};
+use crate::{
+    cg::CodeGen,
+    parser::{Expr, Node},
+};
 
 const RESERVED_KEYWORDS: [&str; 2] = ["extern", "module"];
 
@@ -42,6 +45,7 @@ pub enum AstItem<'a> {
     CloseSquare,
     Colon,
     Identifier(Cow<'a, str>),
+    UseOfProtectedIdentifier(Cow<'a, str>),
     String(Cow<'a, str>),
 }
 
@@ -113,6 +117,17 @@ where
             ')' => self.push_back(AstItem::CloseParenthesis),
             '[' => self.push_back(AstItem::OpenSquare),
             ']' => self.push_back(AstItem::CloseSquare),
+            '🦀' => {
+                assert!(self.input.next().is_some());
+                let Some(next) = self.input.peek() else {
+                    return None
+                };
+                let next=next.to_owned();
+                let AstItem::Identifier(ident) = self.determine(next)? else {
+                    panic!("Expected an identifier to follow the crab🦀.")
+                };
+                return Some(AstItem::UseOfProtectedIdentifier(ident))
+            }
             a @ ' ' | a @ '\n' => return self.push_back(AstItem::Junk(Some(a))),
             '"' => {
                 assert!(self.input.next().is_some());
@@ -154,18 +169,13 @@ fn main() {
         ret: Vec::new(),
     };
     ast.determine_all();
-    println!("{:#?}", ast.ret);
     let mut parser = parser::Parser::init(ast.ret.iter().collect::<Vec<&AstItem<'_>>>());
     parser.parse_all();
     println!("{:#?}", parser.ret);
 
-    unsafe {
-        let mut cg = CodeGen::init(parser.ret);
-        let _ = cg.generate_all();
-        // let context = LLVMContextCreate();
-        // let module = LLVMModuleCreateWithNameInContext(b"sum\0".as_ptr() as *const _, context);
-        // let builder = LLVMCreateBuilderInContext(context);
-
-        cg.print_ir();
-    }
+    // unsafe {
+    //     let mut cg = CodeGen::init(parser.ret);
+    //     cg.generate_all().unwrap();
+    //     cg.print();
+    // }
 }

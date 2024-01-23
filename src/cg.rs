@@ -2,8 +2,7 @@ use std::{collections::HashMap, ptr::null_mut};
 
 use llvm_sys::{
     core::{
-        LLVMAddFunction, LLVMContextCreate, LLVMCreateBuilderInContext, LLVMFunctionType,
-        LLVMInt32Type, LLVMModuleCreateWithNameInContext, LLVMPointerType, LLVMVoidType, LLVMPrintModuleToFile,
+        LLVMAddFunction, LLVMAppendBasicBlock, LLVMArrayType, LLVMArrayType2, LLVMBuildAlloca, LLVMBuildStore, LLVMConstString, LLVMContextCreate, LLVMCreateBasicBlockInContext, LLVMCreateBuilderInContext, LLVMFunctionType, LLVMGetTypeByName2, LLVMGetTypeContext, LLVMInt32Type, LLVMInt8Type, LLVMInt8TypeInContext, LLVMModuleCreateWithNameInContext, LLVMPointerType, LLVMPositionBuilderAtEnd, LLVMPrintModuleToFile, LLVMVoidType
     },
     prelude::{LLVMBuilderRef, LLVMContextRef, LLVMModuleRef, LLVMTypeRef, LLVMValueRef},
     LLVMContext,
@@ -25,7 +24,6 @@ pub struct Module<'a> {
     pub types: HashMap<&'a str, LLVMTypeRef>,
     pub functions: HashMap<&'a str, LLVMValueRef>,
     pub name: &'a str,
-    pub builder: LLVMBuilderRef,
 }
 
 impl<'a> Module<'a> {
@@ -35,7 +33,6 @@ impl<'a> Module<'a> {
         Module {
             inner_module,
             name,
-            builder,
             functions: HashMap::new(),
             types: HashMap::new(),
         }
@@ -60,6 +57,24 @@ pub unsafe fn create_std_module(ctx: LLVMContextRef, builder: LLVMBuilderRef) ->
     module
 }
 
+pub struct TypeHinting {
+    /// Size of the assignment or whatever as a usize
+    pub size: u32,
+}
+
+#[derive(Debug)]
+pub enum NeedsWork {
+    ConstString {
+        val_ref: LLVMValueRef,
+        size_hint: u32,
+    },
+}
+#[derive(Debug)]
+pub enum CodeGenRes {
+    AllGood,
+    NeedsWork(NeedsWork),
+}
+
 pub struct CodeGen<'a> {
     pub cursor: Cursor<Node>,
     pub modules: HashMap<&'a str, Module<'a>>,
@@ -81,17 +96,15 @@ impl<'a> CodeGen<'a> {
         // TODO: Directive to disable this
         modules.insert("std", std);
 
-        let mut cursor = Cursor::init(nodes);
-        // remove when you feel like handling functions in LLVM
-        cursor.next();
-        
+        let cursor = Cursor::init(nodes);
+
         Self {
             cursor,
             modules,
             context,
             builder,
             // SAFETY: These two WILL exist.
-            current_module: "main"
+            current_module: "main",
         }
     }
 
@@ -101,10 +114,10 @@ impl<'a> CodeGen<'a> {
 
     pub fn try_to_get_type(&self, module: &str, ty: &str) -> Option<LLVMTypeRef> {
         let Some(module) = self.modules.get(module) else {
-            return None
+            return None;
         };
         let Some(ty) = module.types.get(ty) else {
-            return None
+            return None;
         };
         Some(ty.to_owned())
     }
@@ -112,64 +125,148 @@ impl<'a> CodeGen<'a> {
     pub fn get_inner_identifier(expr: Expr) -> Option<String> {
         if let Expr::Identifier(ident) = expr {
             return Some(ident);
-        } 
+        }
         None
     }
 
-    pub fn generate_type(&mut self, expr: Box<Expr>) -> Result<LLVMTypeRef, String> {
-        let mut c_mod = self.get_current_module();
+    pub unsafe fn generate_type(
+        &mut self,
+        expr: Box<Expr>,
+        type_hinting: Option<TypeHinting>,
+    ) -> Result<(LLVMTypeRef, LLVMValueRef), String> {
+        let mut c_mod: &mut Module<'_> = self.get_current_module();
         match *expr {
             Expr::Identifier(ident) => {
-                if let Some(possible_predefined_type) = c_mod.types.get(ident.as_str()) {
-                    let pt = possible_predefined_type.to_owned();
-                    return Ok(pt)
+                if let Some(type_hinting) = type_hinting
+                    && &ident == "str"
+                {
+                    let ty = LLVMArrayType2(LLVMInt8TypeInContext(self.context), type_hinting.size as u64);
+                    let alloc =
+                        LLVMBuildAlloca(self.builder, ty, cstr!(""));
+
+
+                    return Ok((ty,alloc));
+                } else {
+                    if let Some(possible_predefined_type) = c_mod.types.get(ident.as_str()) {
+                        let pt = possible_predefined_type.to_owned();
+                        todo!();
+                        //return Ok(pt);
+                    }
+                    return Err(format!("Could not find the type {:?}", ident));
                 }
-                return Err(format!("Could not find the type {:?}", ident))
-            },
-            Expr::TypeParam { ret , ..} => {
+            }
+            Expr::TypeParam { ret, .. } => {
                 let Some(ret) = ret else {
                     return Err(String::from("Expected 'ret' to be Some"));
                 };
-                return Ok(self.generate_type(ret)?);
-            },
-            Expr::ModulePath { segmants } => {
-                let all_unboxed = segmants.iter().map_while(|e: &Box<Expr>| Some(*(e.to_owned()))).collect::<Vec<Expr>>();
-                let module = CodeGen::get_inner_identifier(all_unboxed.first().unwrap().to_owned()).unwrap();
-                let expected_type = CodeGen::get_inner_identifier(all_unboxed.last().unwrap().to_owned()).unwrap();
-                
-                let Some(possible_type) = self.try_to_get_type(&module, &expected_type) else {
-                    return Err(format!("Could not find {expected_type:?} in module {module:?}"));
-                };
-                return Ok(possible_type);
+                todo!();
+                //return Ok(self.generate_type(ret, None)?);
             }
-            _ => return Err(String::from("Expected something else... TypeParam or Identifier"))
-        }
-    }   
+            Expr::ModulePath { segmants } => {
+                let all_unboxed = segmants
+                    .iter()
+                    .map_while(|e: &Box<Expr>| Some(*(e.to_owned())))
+                    .collect::<Vec<Expr>>();
+                let module =
+                    CodeGen::get_inner_identifier(all_unboxed.first().unwrap().to_owned()).unwrap();
+                let expected_type =
+                    CodeGen::get_inner_identifier(all_unboxed.last().unwrap().to_owned()).unwrap();
 
-    pub unsafe fn generate(&mut self, node: Node) -> Result<(), String> {
+                let Some(possible_type) = self.try_to_get_type(&module, &expected_type) else {
+                    return Err(format!(
+                        "Could not find {expected_type:?} in module {module:?}"
+                    ));
+                };
+                todo!()
+                //return Ok(possible_type);
+            }
+            _ => {
+                return Err(String::from(
+                    "Expected something else... TypeParam or Identifier",
+                ))
+            }
+        }
+    }
+
+    pub unsafe fn generate(&mut self, node: Node) -> Result<CodeGenRes, String> {
         match node {
             Node::Expr(expr) => match expr {
-                Expr::Assignment { visibility, typed, left, right } => {
-                    let at_type = self.generate_type(typed).unwrap();
-                    Ok(())
+                Expr::FunctionAssignment {
+                    visibility,
+                    left,
+                    right,
+                } => {
+                    let guessed_return_type = left.type_list.iter().find_map(|e| {
+                        let Expr::TypeParam { has_name, ret } = *(e.to_owned()) else {
+                            return None;
+                        };
+                        let has_name = has_name.map(|e| *e);
+                        if has_name.is_none() {
+                            return Some(self.generate_type(ret?, None).unwrap());
+                        }
+                        None
+                    });
+                    println!("{:?}", guessed_return_type);
+                    todo!()
                 }
-                _ => Ok(())
+                Expr::Assignment {
+                    visibility,
+                    typed,
+                    left,
+                    right,
+                } => {
+                    let c_mod: &mut Module<'_> = self.get_current_module();
+                    let main_ty = LLVMFunctionType(LLVMVoidType(), [].as_mut_ptr(), 0, 0);
+                    let main_func = LLVMAddFunction(c_mod.inner_module, cstr!("test"), main_ty);
+        
+                    let blcok = LLVMAppendBasicBlock(main_func, cstr!("entry"));
+
+                    LLVMPositionBuilderAtEnd(self.builder, blcok);
+
+                    let assignment_name = CodeGen::get_inner_identifier(*left).unwrap();
+                    let CodeGenRes::NeedsWork(NeedsWork::ConstString { val_ref, size_hint }) =
+                        self.generate(Node::Expr(*right))?
+                    else {
+                        return Err(String::from("whattt"));
+                    };
+
+                    let at_type = self
+                        .generate_type(typed, Some(TypeHinting { size: size_hint }))
+                        .unwrap();
+
+                    LLVMBuildStore(self.builder, val_ref, at_type.1);
+                    todo!();
+                }
+                Expr::StringLiteral(mut value) => {
+                    value.push('\0');
+                    let size = std::mem::size_of_val(value.as_bytes()) as u32;
+
+                    return Ok(CodeGenRes::NeedsWork(NeedsWork::ConstString {
+                        val_ref: LLVMConstString(
+                            value.as_bytes().as_ptr() as *const i8,
+                            std::mem::size_of_val(value.as_bytes()) as u32,
+                            1,
+                        ),
+                        size_hint: size,
+                    }));
+                }
+                _ => Ok(CodeGenRes::AllGood),
             },
         }
     }
 
-    pub unsafe fn generate_all(&mut self) -> Result<(), String> {
+    pub unsafe fn generate_all(&mut self) -> Result<CodeGenRes, String> {
         while let Some(node) = self.cursor.current() {
+            println!("!");
             let node = node.to_owned();
-            self.generate(node)?;
-            todo!()
+            self.generate(node).unwrap();
         }
-        Ok(())
+        Ok(CodeGenRes::AllGood)
     }
 
-    pub unsafe fn print_ir(&'a self) {
+    pub unsafe fn print(&'a self) {
         LLVMPrintModuleToFile(
-            self.modules.get("std").unwrap().inner_module,
+            self.modules.get("main").unwrap().inner_module,
             std::ffi::CString::new("out.ll").unwrap().as_ptr(),
             null_mut(),
         );

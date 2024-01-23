@@ -1,2 +1,2 @@
-hello_name :: name std.String -> std.String = name
-main :: std.String = (print (hello_name "Justin"))
+🦀main = 
+    hello_name :: str = "Hello, Justin"
