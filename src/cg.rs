@@ -4,7 +4,7 @@ use llvm_sys::{
     core::{
         LLVMAddFunction, LLVMAppendBasicBlock, LLVMArrayType, LLVMArrayType2, LLVMBuildAlloca, LLVMBuildStore, LLVMConstString, LLVMContextCreate, LLVMCreateBasicBlockInContext, LLVMCreateBuilderInContext, LLVMFunctionType, LLVMGetTypeByName2, LLVMGetTypeContext, LLVMInt32Type, LLVMInt8Type, LLVMInt8TypeInContext, LLVMModuleCreateWithNameInContext, LLVMPointerType, LLVMPositionBuilderAtEnd, LLVMPrintModuleToFile, LLVMVoidType
     },
-    prelude::{LLVMBuilderRef, LLVMContextRef, LLVMModuleRef, LLVMTypeRef, LLVMValueRef},
+    prelude::{LLVMBasicBlockRef, LLVMBuilderRef, LLVMContextRef, LLVMModuleRef, LLVMTypeRef, LLVMValueRef},
     LLVMContext,
 };
 
@@ -19,15 +19,23 @@ macro_rules! cstr {
     };
 }
 
+pub struct GeneratedFunction<'a> {
+    pub name: &'a str,
+    pub ret: LLVMTypeRef,
+    pub args: Vec<LLVMTypeRef>,
+    pub r#ref: LLVMValueRef,
+    pub blocks: Vec<LLVMBasicBlockRef>
+}
+
 pub struct Module<'a> {
     pub(crate) inner_module: LLVMModuleRef,
     pub types: HashMap<&'a str, LLVMTypeRef>,
-    pub functions: HashMap<&'a str, LLVMValueRef>,
+    pub functions: HashMap<&'a str, GeneratedFunction<'a>>,
     pub name: &'a str,
 }
 
 impl<'a> Module<'a> {
-    pub unsafe fn new_named(ctx: LLVMContextRef, builder: LLVMBuilderRef, name: &'a str) -> Self {
+    pub unsafe fn new_named(ctx: LLVMContextRef,  name: &'a str) -> Self {
         let inner_module = LLVMModuleCreateWithNameInContext(cstr!(name), ctx);
 
         Module {
@@ -37,22 +45,24 @@ impl<'a> Module<'a> {
             types: HashMap::new(),
         }
     }
-    pub fn add_fn(&mut self, name: &'a str, func: LLVMValueRef) {
+    pub fn add_fn(&mut self, name: &'a str, func: GeneratedFunction<'a>) {
         self.functions.insert(name, func);
     }
 }
 
 pub unsafe fn create_std_module(ctx: LLVMContextRef, builder: LLVMBuilderRef) -> Module<'static> {
-    let mut module = Module::new_named(ctx, builder, "std");
+    let mut module = Module::new_named(ctx, "std");
 
+    let ptr_type = LLVMPointerType(LLVMVoidType(), 1);
+    let mut args = vec![LLVMInt32Type()];
     let malloc_ty = LLVMFunctionType(
-        LLVMPointerType(LLVMVoidType(), 1),
-        [LLVMInt32Type()].as_mut_ptr(),
+        ptr_type,
+        args.as_mut_ptr(),
         1,
         0,
     );
     let malloc = LLVMAddFunction(module.inner_module, cstr!("malloc"), malloc_ty);
-    module.add_fn("malloc", malloc);
+    module.add_fn("malloc", GeneratedFunction { name: "malloc", ret: ptr_type, args, r#ref: malloc, blocks: vec![] });
 
     module
 }
@@ -88,7 +98,7 @@ impl<'a> CodeGen<'a> {
         let context = LLVMContextCreate();
         let builder = LLVMCreateBuilderInContext(context);
 
-        let main = Module::new_named(context, builder, "main");
+        let main = Module::new_named(context, "main");
         let std = create_std_module(context, builder);
 
         let mut modules = HashMap::new();
@@ -197,24 +207,11 @@ impl<'a> CodeGen<'a> {
                     right,
                 } => {
                     let name_of_func = CodeGen::get_inner_identifier(*left.name).unwrap();
-                    let guessed_return_type = if left.type_list.len() == 0 && &name_of_func == "main" {
-                        // panic!("Function needs to have at least 2 arguments. One named, one return. The return argument is decided by whether or not it is named.");
-                        LLVMVoidType()
-                    } else {
-                        left.type_list.iter().find_map(|e| {
-                            let Expr::TypeParam { has_name, ret } = *(e.to_owned()) else {
-                                return None;
-                            };
-                            let has_name = has_name.map(|e| *e);
-                            if has_name.is_none() {
-                                return Some(self.generate_type(ret?, None).unwrap());
-                            }
-                            None
-                        }).unwrap().0
-                    };
+                    // Just default to void incase....
+                    let return_type: LLVMTypeRef = LLVMVoidType();
 
                     let c_mod: &mut Module<'_> = self.get_current_module();
-                    let func_def_ty = LLVMFunctionType(guessed_return_type, [].as_mut_ptr(), 0, 0);
+                    let func_def_ty = LLVMFunctionType(return_type, [].as_mut_ptr(), 0, 0);
                     let func_def = LLVMAddFunction(c_mod.inner_module, cstr!(name_of_func), func_def_ty);
 
                     let blcok = LLVMAppendBasicBlock(func_def, cstr!("entry"));

@@ -28,7 +28,31 @@ use crate::{
     parser::{Expr, Node},
 };
 
-const RESERVED_KEYWORDS: [&str; 2] = ["extern", "module"];
+const RESERVED_KEYWORDS: [&str; 3] = ["main", "in", "let"];
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum Keywords {
+    In,
+    Let
+}
+
+impl TryFrom<String> for Keywords {
+    type Error = ();
+    fn try_from(value: String) -> Result<Self, ()> {
+        Ok(match value.as_str() {
+            "in" => Keywords::In,
+            "let" => Keywords::Let,
+            _ => return Err(())  
+        })
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum Indent {
+    Increase,
+    Decrease,
+    NoContest
+}
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum AstItem<'a> {
@@ -47,6 +71,9 @@ pub enum AstItem<'a> {
     Identifier(Cow<'a, str>),
     UseOfProtectedIdentifier(Cow<'a, str>),
     String(Cow<'a, str>),
+    Keyword(Keywords),
+    // This is = to \n + space ...
+    Indent(Indent)
 }
 
 pub struct AST<'a, A>
@@ -55,6 +82,8 @@ where
 {
     pub input: Peekable<A>,
     pub ret: Vec<AstItem<'a>>,
+    pub using_protected_identifier: bool,
+    pub last_space_or_tab_count: usize
 }
 
 impl<'a, A> AST<'a, A>
@@ -117,12 +146,34 @@ where
             ')' => self.push_back(AstItem::CloseParenthesis),
             '[' => self.push_back(AstItem::OpenSquare),
             ']' => self.push_back(AstItem::CloseSquare),
+            // '\n' => {
+            //     self.input.next();
+            //     let mut count = 0;
+            //     while let Some(peeked) = self.input.peek() {
+            //         if peeked != &' ' && peeked != &'\t' {
+            //             break;
+            //         }
+            //         self.input.next();
+            //         count += 1;
+            //     }
+            //     return Some(AstItem::Indent(if count > self.last_space_or_tab_count {
+            //         Indent::Increase  
+            //     } else if  count < self.last_space_or_tab_count {
+            //         Indent::Decrease
+            //     } else if count == self.last_space_or_tab_count {
+            //         Indent::NoContest
+            //     } else {
+            //         panic!("Shouldnt be possible");
+            //     }));
+
+            // }
             '🦀' => {
                 assert!(self.input.next().is_some());
                 let Some(next) = self.input.peek() else {
                     return None
                 };
                 let next=next.to_owned();
+                self.using_protected_identifier = true;
                 let AstItem::Identifier(ident) = self.determine(next)? else {
                     panic!("Expected an identifier to follow the crab🦀.")
                 };
@@ -141,6 +192,12 @@ where
                 let temp_str = self
                     .collect_temp_string_till(vec![' ', '\n'], Some(current_c), true)
                     .unwrap();
+                if RESERVED_KEYWORDS.contains(&temp_str.as_str()) && !self.using_protected_identifier {
+                    // handle this dingus
+                    self.using_protected_identifier = false;
+                    return Some(AstItem::Keyword(Keywords::try_from(temp_str).unwrap()))
+                }
+                self.using_protected_identifier = false;
                 return Some(AstItem::Identifier(Cow::Owned(temp_str)));
             }
         }
@@ -167,15 +224,18 @@ fn main() {
     let mut ast = AST {
         input: chars,
         ret: Vec::new(),
+        using_protected_identifier: false,
+        last_space_or_tab_count: 0
     };
     ast.determine_all();
+    println!("{:#?}", ast.ret);
     let mut parser = parser::Parser::init(ast.ret.iter().collect::<Vec<&AstItem<'_>>>());
     parser.parse_all();
     println!("{:#?}", parser.ret);
 
-    unsafe {
-        let mut cg = CodeGen::init(parser.ret);
-        cg.generate_all().unwrap();
-        cg.print();
-    }
+    // unsafe {
+    //     let mut cg = CodeGen::init(parser.ret);
+    //     cg.generate_all().unwrap();
+    //     cg.print();
+    // }
 }

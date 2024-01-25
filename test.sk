@@ -1,2 +1,5 @@
+otther :: named str -> str = named
+
 🦀main = 
-    hello_name :: str = "Hello, Justin"
+    let hello_name :: str = (otther <- "Hello, World?") in
+    (std.print <- hello_name)!
