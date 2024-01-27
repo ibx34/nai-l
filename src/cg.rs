@@ -237,7 +237,6 @@ impl<'a> CodeGen<'a> {
                     let at_type = self
                         .generate_type(typed, Some(TypeHinting { size: size_hint }))
                         .unwrap();
-
                     LLVMBuildStore(self.builder, val_ref, at_type.1);
                     Ok(CodeGenRes::AllGood)
                 }

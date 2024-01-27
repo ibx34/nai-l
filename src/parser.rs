@@ -50,7 +50,7 @@ pub enum Expr {
     LetIn {
         let_what: Box<Expr>,
         be_in: Box<Expr>
-    }
+    },
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -64,6 +64,7 @@ pub struct Parser<'a> {
     pub ast: Cursor<&'a AstItem<'a>>,
     pub ret: Vec<Node>,
     pub current_indent_level: usize,
+    pub current_block: Vec<Node>,
 }
 
 impl<'a> Parser<'a> {
@@ -72,12 +73,16 @@ impl<'a> Parser<'a> {
             ast: Cursor::init(ast),
             ret: Vec::new(),
             current_indent_level: 0,
+            current_block: Vec::new(),
         }
     }
 
     pub fn parse_all(&mut self) {
         while let Some(next) = self.ast.current() {
             let next = next.to_owned();
+            // if matches!(next, AstItem::Indent(crate::Indent::Increase) | AstItem::Indent(crate::Indent::NoContest) | AstItem::Indent(crate::Indent::Decrease)) {
+            //     todo!()
+            // }
             match self.parse_expr(next) {
                 Some(parsed) => self.ret.push(Node::Expr(parsed.to_owned())),
                 _ => {}
@@ -284,6 +289,7 @@ impl<'a> Parser<'a> {
                 let be_in = Box::new(self.parse_expr(self.ast.current()?)?);
                 return Some(Expr::LetIn { let_what, be_in });
             }
+
             _ => {
                 self.ast.next();
                 return None;

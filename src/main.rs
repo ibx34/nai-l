@@ -68,6 +68,7 @@ pub enum AstItem<'a> {
     OpenSquare,
     CloseSquare,
     Colon,
+    Bang,
     Identifier(Cow<'a, str>),
     UseOfProtectedIdentifier(Cow<'a, str>),
     String(Cow<'a, str>),
@@ -145,6 +146,7 @@ where
             '(' => self.push_back(AstItem::OpenParenthesis),
             ')' => self.push_back(AstItem::CloseParenthesis),
             '[' => self.push_back(AstItem::OpenSquare),
+            '!' => self.push_back(AstItem::Bang),
             ']' => self.push_back(AstItem::CloseSquare),
             // '\n' => {
             //     self.input.next();
@@ -165,7 +167,6 @@ where
             //     } else {
             //         panic!("Shouldnt be possible");
             //     }));
-
             // }
             '🦀' => {
                 assert!(self.input.next().is_some());

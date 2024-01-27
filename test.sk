@@ -2,4 +2,4 @@ otther :: named str -> str = named
 
 🦀main = 
     let hello_name :: str = (otther <- "Hello, World?") in
-    (std.print <- hello_name)!
+    (std.print <- hello_name)
