@@ -1,4 +1,4 @@
-otther :: named str -> str = named
+otther :: named str -> str = "hello"
 
 🦀main = 
     let hello_name :: str = (otther <- "Hello, World?") in

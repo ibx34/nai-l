@@ -1,11 +1,11 @@
-use std::{collections::HashMap, ptr::null_mut};
+use std::{collections::HashMap, ptr::{self, null_mut}};
 
 use llvm_sys::{
     core::{
-        LLVMAddFunction, LLVMAppendBasicBlock, LLVMArrayType, LLVMArrayType2, LLVMBuildAlloca, LLVMBuildStore, LLVMConstString, LLVMContextCreate, LLVMCreateBasicBlockInContext, LLVMCreateBuilderInContext, LLVMFunctionType, LLVMGetTypeByName2, LLVMGetTypeContext, LLVMInt32Type, LLVMInt8Type, LLVMInt8TypeInContext, LLVMModuleCreateWithNameInContext, LLVMPointerType, LLVMPositionBuilderAtEnd, LLVMPrintModuleToFile, LLVMVoidType
-    },
-    prelude::{LLVMBasicBlockRef, LLVMBuilderRef, LLVMContextRef, LLVMModuleRef, LLVMTypeRef, LLVMValueRef},
-    LLVMContext,
+        LLVMAddFunction, LLVMAppendBasicBlock, LLVMArrayType, LLVMArrayType2, LLVMBuildAlloca, LLVMBuildCall2, LLVMBuildGEP2, LLVMBuildLoad2, LLVMBuildRet, LLVMBuildRetVoid, LLVMBuildStore, LLVMConstInt, LLVMConstNull, LLVMConstString, LLVMConstStringInContext, LLVMContextCreate, LLVMCreateBasicBlockInContext, LLVMCreateBuilderInContext, LLVMFunctionType, LLVMGetElementType, LLVMGetPointerAddressSpace, LLVMGetTypeByName2, LLVMGetTypeContext, LLVMInt32Type, LLVMInt32TypeInContext, LLVMInt8Type, LLVMInt8TypeInContext, LLVMModuleCreateWithNameInContext, LLVMPointerType, LLVMPointerTypeInContext, LLVMPointerTypeIsOpaque, LLVMPositionBuilderAtEnd, LLVMPrintModuleToFile, LLVMSetIsInBounds, LLVMTypeOf, LLVMVoidType
+    }, prelude::{
+        LLVMBasicBlockRef, LLVMBuilderRef, LLVMContextRef, LLVMModuleRef, LLVMTypeRef, LLVMValueRef,
+    }, transforms::pass_builder::LLVMOpaquePassBuilderOptions, LLVMContext, LLVMOpcode::LLVMGetElementPtr
 };
 
 use crate::{
@@ -19,262 +19,82 @@ macro_rules! cstr {
     };
 }
 
-pub struct GeneratedFunction<'a> {
-    pub name: &'a str,
-    pub ret: LLVMTypeRef,
-    pub args: Vec<LLVMTypeRef>,
-    pub r#ref: LLVMValueRef,
-    pub blocks: Vec<LLVMBasicBlockRef>
-}
-
-pub struct Module<'a> {
-    pub(crate) inner_module: LLVMModuleRef,
-    pub types: HashMap<&'a str, LLVMTypeRef>,
-    pub functions: HashMap<&'a str, GeneratedFunction<'a>>,
-    pub name: &'a str,
-}
-
-impl<'a> Module<'a> {
-    pub unsafe fn new_named(ctx: LLVMContextRef,  name: &'a str) -> Self {
-        let inner_module = LLVMModuleCreateWithNameInContext(cstr!(name), ctx);
-
-        Module {
-            inner_module,
-            name,
-            functions: HashMap::new(),
-            types: HashMap::new(),
-        }
-    }
-    pub fn add_fn(&mut self, name: &'a str, func: GeneratedFunction<'a>) {
-        self.functions.insert(name, func);
-    }
-}
-
-pub unsafe fn create_std_module(ctx: LLVMContextRef, builder: LLVMBuilderRef) -> Module<'static> {
-    let mut module = Module::new_named(ctx, "std");
-
-    let ptr_type = LLVMPointerType(LLVMVoidType(), 1);
-    let mut args = vec![LLVMInt32Type()];
-    let malloc_ty = LLVMFunctionType(
-        ptr_type,
-        args.as_mut_ptr(),
-        1,
-        0,
-    );
-    let malloc = LLVMAddFunction(module.inner_module, cstr!("malloc"), malloc_ty);
-    module.add_fn("malloc", GeneratedFunction { name: "malloc", ret: ptr_type, args, r#ref: malloc, blocks: vec![] });
-
-    module
-}
-
-pub struct TypeHinting {
-    /// Size of the assignment or whatever as a usize
-    pub size: u32,
-}
-
-#[derive(Debug)]
-pub enum NeedsWork {
-    ConstString {
-        val_ref: LLVMValueRef,
-        size_hint: u32,
-    },
-}
-#[derive(Debug)]
-pub enum CodeGenRes {
-    AllGood,
-    NeedsWork(NeedsWork),
-}
-
-pub struct CodeGen<'a> {
+pub struct CodeGen {
     pub cursor: Cursor<Node>,
-    pub modules: HashMap<&'a str, Module<'a>>,
     pub context: LLVMContextRef,
     pub builder: LLVMBuilderRef,
-    pub current_module: &'a str,
 }
 
-impl<'a> CodeGen<'a> {
+impl CodeGen {
     pub unsafe fn init(nodes: Vec<Node>) -> Self {
         let context = LLVMContextCreate();
         let builder = LLVMCreateBuilderInContext(context);
-
-        let main = Module::new_named(context, "main");
-        let std = create_std_module(context, builder);
-
-        let mut modules = HashMap::new();
-        modules.insert("main", main);
-        // TODO: Directive to disable this
-        modules.insert("std", std);
+        let module = LLVMModuleCreateWithNameInContext(cstr!("main"), context);
+        
+        let printf_ty = LLVMFunctionType(LLVMInt32Type(),  [].as_mut_ptr(), 0, 0);
+        let printf = LLVMAddFunction(module, cstr!("printf"), printf_ty);
 
         let cursor = Cursor::init(nodes);
+        let entry_ty = LLVMFunctionType(LLVMInt32Type(), [].as_mut_ptr(), 0, 0);
+        let entry = LLVMAddFunction(module, cstr!("main"), entry_ty);
+        let entry_block = LLVMAppendBasicBlock(entry, cstr!("entry"));
+        LLVMPositionBuilderAtEnd(builder, entry_block);
 
-        Self {
-            cursor,
-            modules,
+        let ptr_type = LLVMPointerTypeInContext(context, 0);
+        let alloc = LLVMBuildAlloca(builder, ptr_type, cstr!("str_ptr"));
+        let original_val = "Hello world!\n\0";
+        let value = LLVMConstStringInContext(
             context,
-            builder,
-            // SAFETY: These two WILL exist.
-            current_module: "main",
-        }
-    }
+            original_val.as_bytes().as_ptr() as *const i8,
+            std::mem::size_of_val(original_val.as_bytes()) as u32,
+            1,
+        );
 
-    pub fn get_current_module(&mut self) -> &mut Module<'a> {
-        self.modules.get_mut(self.current_module).unwrap()
-    }
+        let mut indices = [LLVMConstInt(LLVMInt32TypeInContext(context), 0, 0)];
+        let built_gep = LLVMBuildGEP2(builder, ptr_type, alloc, indices.as_mut_ptr(), 1, cstr!("gep"));
+        LLVMSetIsInBounds(built_gep, 1);
+        // let loaded_str: *mut llvm_sys::LLVMValue = LLVMBuildGEP2(builder, int8_ptr_ty_for_char, alloc, [LLVMConstInt(LLVMInt32Type(), 0, 0), LLVMConstInt(LLVMInt32Type(), 0, 0)].as_mut_ptr(), 2, cstr!(""));
+        LLVMBuildStore(builder, built_gep, alloc);
+        println!("{:?}", LLVMPointerTypeIsOpaque(LLVMTypeOf(alloc)));
+        let loaded_str: *mut llvm_sys::LLVMValue = LLVMBuildLoad2(builder, LLVMPointerType(LLVMInt8TypeInContext(context), 0), alloc, cstr!("loaded_str"));
+        LLVMBuildStore(builder, value, alloc);
 
-    pub fn try_to_get_type(&self, module: &str, ty: &str) -> Option<LLVMTypeRef> {
-        let Some(module) = self.modules.get(module) else {
-            return None;
-        };
-        let Some(ty) = module.types.get(ty) else {
-            return None;
-        };
-        Some(ty.to_owned())
-    }
+        LLVMBuildCall2(builder, printf_ty, printf, [loaded_str].as_mut_ptr(), 1, cstr!("call_printf"));
 
-    pub fn get_inner_identifier(expr: Expr) -> Option<String> {
-        if let Expr::Identifier(ident) = expr {
-            return Some(ident);
-        }
-        None
-    }
-
-    pub unsafe fn generate_type(
-        &mut self,
-        expr: Box<Expr>,
-        type_hinting: Option<TypeHinting>,
-    ) -> Result<(LLVMTypeRef, LLVMValueRef), String> {
-        let mut c_mod: &mut Module<'_> = self.get_current_module();
-        match *expr {
-            Expr::Identifier(ident) => {
-                if let Some(type_hinting) = type_hinting
-                    && &ident == "str"
-                {
-                    let ty = LLVMArrayType2(LLVMInt8TypeInContext(self.context), type_hinting.size as u64);
-                    let alloc =
-                        LLVMBuildAlloca(self.builder, ty, cstr!(""));
-
-
-                    return Ok((ty,alloc));
-                } else {
-                    if let Some(possible_predefined_type) = c_mod.types.get(ident.as_str()) {
-                        let pt = possible_predefined_type.to_owned();
-                        todo!();
-                        //return Ok(pt);
-                    }
-                    return Err(format!("Could not find the type {:?}", ident));
-                }
-            }
-            Expr::TypeParam { ret, .. } => {
-                let Some(ret) = ret else {
-                    return Err(String::from("Expected 'ret' to be Some"));
-                };
-                todo!();
-                //return Ok(self.generate_type(ret, None)?);
-            }
-            Expr::ModulePath { segmants } => {
-                let all_unboxed = segmants
-                    .iter()
-                    .map_while(|e: &Box<Expr>| Some(*(e.to_owned())))
-                    .collect::<Vec<Expr>>();
-                let module =
-                    CodeGen::get_inner_identifier(all_unboxed.first().unwrap().to_owned()).unwrap();
-                let expected_type =
-                    CodeGen::get_inner_identifier(all_unboxed.last().unwrap().to_owned()).unwrap();
-
-                let Some(possible_type) = self.try_to_get_type(&module, &expected_type) else {
-                    return Err(format!(
-                        "Could not find {expected_type:?} in module {module:?}"
-                    ));
-                };
-                todo!()
-                //return Ok(possible_type);
-            }
-            _ => {
-                return Err(String::from(
-                    "Expected something else... TypeParam or Identifier",
-                ))
-            }
-        }
-    }
-
-    pub unsafe fn generate(&mut self, node: Node) -> Result<CodeGenRes, String> {
-        match node {
-            Node::Expr(expr) => match expr {
-                Expr::FunctionAssignment {
-                    visibility,
-                    left,
-                    right,
-                } => {
-                    let name_of_func = CodeGen::get_inner_identifier(*left.name).unwrap();
-                    // Just default to void incase....
-                    let return_type: LLVMTypeRef = LLVMVoidType();
-
-                    let c_mod: &mut Module<'_> = self.get_current_module();
-                    let func_def_ty = LLVMFunctionType(return_type, [].as_mut_ptr(), 0, 0);
-                    let func_def = LLVMAddFunction(c_mod.inner_module, cstr!(name_of_func), func_def_ty);
-
-                    let blcok = LLVMAppendBasicBlock(func_def, cstr!("entry"));
-                    LLVMPositionBuilderAtEnd(self.builder, blcok);
-
-                    self.generate(Node::Expr(*(right.to_owned())))?;
-                    self.cursor.next();
-                    Ok(CodeGenRes::AllGood)
-                }
-                Expr::Assignment {
-                    visibility,
-                    typed,
-                    left,
-                    right,
-                } => {
-                    let assignment_name = CodeGen::get_inner_identifier(*left).unwrap();
-                    let CodeGenRes::NeedsWork(NeedsWork::ConstString { val_ref, size_hint }) =
-                        self.generate(Node::Expr(*right))?
-                    else {
-                        return Err(String::from("whattt"));
-                    };
-
-                    let at_type = self
-                        .generate_type(typed, Some(TypeHinting { size: size_hint }))
-                        .unwrap();
-                    LLVMBuildStore(self.builder, val_ref, at_type.1);
-                    Ok(CodeGenRes::AllGood)
-                }
-                Expr::StringLiteral(mut value) => {
-                    value.push('\0');
-                    let size = std::mem::size_of_val(value.as_bytes()) as u32;
-
-                    return Ok(CodeGenRes::NeedsWork(NeedsWork::ConstString {
-                        val_ref: LLVMConstString(
-                            value.as_bytes().as_ptr() as *const i8,
-                            std::mem::size_of_val(value.as_bytes()) as u32,
-                            1,
-                        ),
-                        size_hint: size,
-                    }));
-                }
-                _ => {
-                    println!("other");
-                    Ok(CodeGenRes::AllGood)
-                },
-            },
-        }
-    }
-
-    pub unsafe fn generate_all(&mut self) -> Result<CodeGenRes, String> {
-        while let Some(node) = self.cursor.current() {
-            println!("!");
-            let node = node.to_owned();
-            self.generate(node).unwrap();
-        }
-        Ok(CodeGenRes::AllGood)
-    }
-
-    pub unsafe fn print(&'a self) {
+        LLVMBuildRet(builder, LLVMConstInt(LLVMInt32Type(), 0, 0));
+        
         LLVMPrintModuleToFile(
-            self.modules.get("main").unwrap().inner_module,
-            std::ffi::CString::new("out.ll").unwrap().as_ptr(),
+            module,
+            std::ffi::CString::new("out2.ll").unwrap().as_ptr(),
             null_mut(),
         );
+
+        todo!();
+        Self {
+            cursor,
+            context,
+            builder,
+        }
     }
+
+    // pub unsafe fn generate(&mut self) -> Result<CodeGenRes, String> {
+    //     todo!()
+    // }
+
+    // pub unsafe fn generate_all(&mut self) -> Result<CodeGenRes, String> {
+    //     while let Some(node) = self.cursor.current() {
+    //         println!("!");
+    //         let node = node.to_owned();
+    //         todo!()
+    //     }
+    //     Ok(CodeGenRes::AllGood)
+    // }
+
+    // pub unsafe fn print(&self) {
+    //     LLVMPrintModuleToFile(
+    //         self.modules.get("main").unwrap().inner_module,
+    //         std::ffi::CString::new("out.ll").unwrap().as_ptr(),
+    //         null_mut(),
+    //     );
+    // }
 }
