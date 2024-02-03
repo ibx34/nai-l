@@ -28,12 +28,14 @@ use crate::{
     parser::{Expr, Node},
 };
 
-const RESERVED_KEYWORDS: [&str; 3] = ["main", "in", "let"];
+const RESERVED_KEYWORDS: [&str; 5] = ["main", "in", "let", "module", "where"];
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Keywords {
     In,
     Let,
+    Module,
+    Where
 }
 
 impl TryFrom<String> for Keywords {
@@ -42,19 +44,21 @@ impl TryFrom<String> for Keywords {
         Ok(match value.as_str() {
             "in" => Keywords::In,
             "let" => Keywords::Let,
+            "where" => Keywords::Where,
+            "module" => Keywords::Module,
             _ => return Err(()),
         })
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Indent {
     Increase,
     Decrease,
     NoContest,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum AstItem<'a> {
     Junk(Option<char>),
     Plus,
@@ -75,6 +79,7 @@ pub enum AstItem<'a> {
     Keyword(Keywords),
     // This is = to \n + space ...
     Indent(Indent),
+    ModulePath(Vec<Box<AstItem<'a>>>),
 }
 
 pub struct AST<'a, A>
@@ -117,7 +122,9 @@ where
         return Some(temp_str);
     }
     pub fn push_back(&mut self, ast_item: AstItem<'a>) -> Option<AstItem<'a>> {
-        assert!(self.input.next().is_some());
+        if self.input.next().is_none() {
+            return Some(AstItem::Junk(Some('!')));
+        };
         return Some(ast_item);
     }
     pub fn determine(&mut self, to_determine: char) -> Option<AstItem<'a>> {
@@ -180,7 +187,8 @@ where
                 };
                 return Some(AstItem::UseOfProtectedIdentifier(ident));
             }
-            a @ ' ' | a @ '\n' => return self.push_back(AstItem::Junk(Some(a))),
+            ' ' => return self.push_back(AstItem::Junk(Some(' '))),
+            a @ '\n' => return self.push_back(AstItem::Junk(Some(a))),
             '"' => {
                 assert!(self.input.next().is_some());
                 let temp_str = self
@@ -201,6 +209,29 @@ where
                     return Some(AstItem::Keyword(Keywords::try_from(temp_str).unwrap()));
                 }
                 self.using_protected_identifier = false;
+                if let Some(c @ '.') = self.input.peek() {
+                    if self.input.next().is_none() {
+                        panic!("Expected more after dot?")
+                    };
+                    // Lex the module path. This decision was made due to the fact that at the time of writting this
+                    // the parser doesnt recognise spaces and so it wanst built around it. And really, it makes more sense
+                    // to lower the module path from lexer to parser as the lexer also handles identifiers, and strings
+                    // both "special" cases
+                    let mut path_segments =
+                        vec![Box::new(AstItem::Identifier(Cow::Owned(temp_str)))];
+                    while let Some(next) = self.input.peek() {
+                        let next = next.to_owned();
+                        let Some(determined) = self.determine(next) else {
+                            panic!("Failed to determine part of a path segment...");
+                        };
+                        match determined {
+                            a @ AstItem::Identifier(_) => path_segments.push(Box::new(a)),
+                            AstItem::Dot => continue,
+                            _ => break,
+                        }
+                    }
+                    return Some(AstItem::ModulePath(path_segments));
+                }
                 return Some(AstItem::Identifier(Cow::Owned(temp_str)));
             }
         }
@@ -211,6 +242,9 @@ where
             match self.determine(nc) {
                 // Discard the junk items. The entire system could be reworked to be way better but who cares. Maybe use a Result type instead of Option but who knows im not that smart
                 //Some(a @ AstItem::Junk(Some(' '))) => self.ret.push(a),
+                Some(AstItem::Junk(Some('!'))) => {
+                    break;
+                }
                 Some(AstItem::Junk(_)) => {}
 
                 Some(a @ _) => self.ret.push(a),

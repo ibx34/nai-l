@@ -1,5 +1,5 @@
-otther :: named str -> str = "hello"
+return_the_input :: named str -> str = named
 
 🦀main = 
-    let hello_name :: str = (otther <- "Hello, World?") in
-    (std.print <- hello_name)
+    let hello_name :: str = (return_the_input "Hello, World?") in
+    (std.print hello_name)

@@ -108,11 +108,6 @@ impl<'a> Parser<'a> {
                     if let AstItem::CloseParenthesis = current {
                         self.ast.next();
                         break;
-                    } else if let AstItem::LessThan = current {
-                        if matches!(self.ast.next()?, AstItem::Dash) {
-                            self.ast.next();
-                            continue;
-                        }
                     } else {
                         let Some(parsed) = self.parse_expr(current) else {
                             println!("{:?} didnt make the cut for {:?}", current, to_call);
@@ -122,7 +117,6 @@ impl<'a> Parser<'a> {
                         continue;
                     }
                 }
-                println!("Calling {:?} with the arguments {:?}", to_call, collected);
                 return Some(Expr::FunctionCall {
                     to_call: Box::new(to_call),
                     arguments: collected,
@@ -262,25 +256,8 @@ impl<'a> Parser<'a> {
                         }
                         return None;
                     }
-                    Some(AstItem::Dot) => {
-                        self.ast.next();
-                        let mut segmants: Vec<_> = Vec::from(&[Box::new(Expr::Identifier(ident))]);
-                        while let Some(current) = self.ast.current() {
-                            let current = current.to_owned();
-                            match current {
-                                AstItem::Dot => _ = self.ast.next(),
-                                a @ AstItem::Identifier(_) => {
-                                    if let Some(b @ Expr::Identifier(_)) = self.parse_expr(a) {
-                                        segmants.push(Box::new(b));
-                                        continue;
-                                    }
-                                    break;
-                                }
-                                _ => break,
-                            }
-                        }
-                        return Some(Expr::ModulePath { segmants });
-                    }
+                    // Foward module paths to the top level parser
+                    Some(AstItem::ModulePath(segmants)) => return Some(self.parse_expr(parse)?),
                     Some(AstItem::Eq) if protected => {
                         // In some cases (like the protected identifier) there may not be any
                         // types and such we should handle this function as kind of a "assignment"
@@ -296,6 +273,21 @@ impl<'a> Parser<'a> {
                         return Some(Expr::Identifier(ident));
                     }
                 }
+            }
+            AstItem::ModulePath(segmants) => {
+                self.ast.next();
+                return Some(Expr::ModulePath {
+                    segmants: segmants
+                        .iter()
+                        .map_while(|e| {
+                            if let AstItem::Identifier(a) = *(e.to_owned()) {
+                                let inner_ident = a.to_string();
+                                return Some(Box::new(Expr::Identifier(inner_ident)));
+                            }
+                            None
+                        })
+                        .collect::<Vec<Box<Expr>>>(),
+                });
             }
             AstItem::String(str) => {
                 self.ast.next();
