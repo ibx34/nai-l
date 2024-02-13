@@ -1,4 +1,4 @@
-use std::{collections::HashMap, hash::Hash, net::UdpSocket};
+use std::{borrow::{Borrow, Cow}, collections::HashMap, hash::Hash, net::UdpSocket};
 
 use llvm_sys::orc2::ee;
 
@@ -148,30 +148,36 @@ impl<'a> Parser<'a> {
                         continue;
                     }
                 } else {
+                    println!(">");
                     let Some(parsed) = self.parse_expr(current) else {
                         break;
                     };
-                    if let Expr::Identifier(identifier) = parsed {
-                        let Some(peeked) = self.ast.current() else {
-                            break;
-                        };
-                        let peeked = peeked.to_owned();
-                        if matches!(peeked, AstItem::Identifier(_)) {
+                    println!("{:?}", parsed);
+                    match parsed {
+                        Expr::Identifier(identifier) => {
+                            let Some(peeked) = self.ast.current() else {
+                                break;
+                            };
+                            let peeked = peeked.to_owned();
+                            if matches!(peeked, AstItem::Identifier(_) | AstItem::ModulePath { .. }) {
+                                type_list.push(Box::new(Expr::TypeParam {
+                                    has_name: Some(Box::new(Expr::Identifier(identifier.to_owned()))),
+                                    ret: self.parse_expr(peeked).map(|e| Box::new(e)),
+                                }));
+                                continue;
+                            }
                             type_list.push(Box::new(Expr::TypeParam {
-                                has_name: Some(Box::new(Expr::Identifier(identifier.to_owned()))),
-                                ret: self.parse_expr(peeked).map(|e| Box::new(e)),
+                                has_name: None,
+                                ret: Some(Box::new(Expr::Identifier(identifier))),
                             }));
-                            continue;
                         }
-                        type_list.push(Box::new(Expr::TypeParam {
-                            has_name: None,
-                            ret: Some(Box::new(Expr::Identifier(identifier))),
-                        }));
-                    } else if let a @ Expr::ModulePath { .. } = parsed {
-                        type_list.push(Box::new(Expr::TypeParam {
-                            has_name: None,
-                            ret: Some(Box::new(a)),
-                        }));
+                        a @ Expr::ModulePath { .. } => {
+                            type_list.push(Box::new(Expr::TypeParam {
+                                has_name: None,
+                                ret: Some(Box::new(a)),
+                            }));
+                        }
+                        _ => panic!("Unsupported in type list")
                     }
                 }
             }
@@ -226,9 +232,7 @@ impl<'a> Parser<'a> {
     pub fn parse_expr(&mut self, parse: &'a AstItem<'a>) -> Option<Expr> {
         match parse {
             a @ AstItem::OpenParenthesis => self.parse_function_call(a),
-            a @ AstItem::Identifier(identifier)
-            | a @ AstItem::UseOfProtectedIdentifier(identifier) => {
-                let ident = identifier.to_string();
+            a @ AstItem::Identifier(ident) => {   
                 let protected = matches!(a, AstItem::UseOfProtectedIdentifier(_))
                     && crate::RESERVED_KEYWORDS.contains(&ident.as_str());
                 let pass_argument_check = if protected {
@@ -243,7 +247,7 @@ impl<'a> Parser<'a> {
                             if let Some(AstItem::Colon) = self.ast.current() {
                                 self.ast.next();
                                 let parsed_assignment = self.parse_assignment(
-                                    Expr::Identifier(ident),
+                                    Expr::Identifier(ident.to_owned()),
                                     pass_argument_check,
                                     false,
                                 )?;
@@ -257,24 +261,28 @@ impl<'a> Parser<'a> {
                         return None;
                     }
                     // Foward module paths to the top level parser
-                    Some(AstItem::ModulePath(segmants)) => return Some(self.parse_expr(parse)?),
+                    // Some(AstItem::ModulePath(segmants)) => {
+                    //     println!("!!!");
+                    //     return Some(self.parse_expr(parse)?)
+                    // },
                     Some(AstItem::Eq) if protected => {
                         // In some cases (like the protected identifier) there may not be any
                         // types and such we should handle this function as kind of a "assignment"
                         self.ast.advance_by(2);
                         return self.parse_assignment(
-                            Expr::Identifier(ident),
+                            Expr::Identifier(ident.to_owned()),
                             pass_argument_check,
                             true,
                         );
                     }
                     _ => {
                         self.ast.next();
-                        return Some(Expr::Identifier(ident));
+                        return Some(Expr::Identifier(ident.to_owned()));
                     }
                 }
             }
             AstItem::ModulePath(segmants) => {
+                println!("!!");
                 self.ast.next();
                 return Some(Expr::ModulePath {
                     segmants: segmants

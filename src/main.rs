@@ -2,6 +2,7 @@
 #![allow(temporary_cstring_as_ptr)]
 #![feature(iter_advance_by)]
 #![feature(box_into_inner)]
+#![feature(if_let_guard)]
 pub mod cg;
 pub mod parser;
 pub mod utils;
@@ -24,7 +25,7 @@ use std::{
 };
 
 use crate::{
-    cg::CodeGen,
+    cg::{CodeGen, CodeGenOptions},
     parser::{Expr, Node},
 };
 
@@ -35,7 +36,7 @@ pub enum Keywords {
     In,
     Let,
     Module,
-    Where
+    Where,
 }
 
 impl TryFrom<String> for Keywords {
@@ -73,8 +74,8 @@ pub enum AstItem<'a> {
     CloseSquare,
     Colon,
     Bang,
-    Identifier(Cow<'a, str>),
-    UseOfProtectedIdentifier(Cow<'a, str>),
+    Identifier(String),
+    UseOfProtectedIdentifier(String),
     String(Cow<'a, str>),
     Keyword(Keywords),
     // This is = to \n + space ...
@@ -155,26 +156,6 @@ where
             '[' => self.push_back(AstItem::OpenSquare),
             '!' => self.push_back(AstItem::Bang),
             ']' => self.push_back(AstItem::CloseSquare),
-            // '\n' => {
-            //     self.input.next();
-            //     let mut count = 0;
-            //     while let Some(peeked) = self.input.peek() {
-            //         if peeked != &' ' && peeked != &'\t' {
-            //             break;
-            //         }
-            //         self.input.next();
-            //         count += 1;
-            //     }
-            //     return Some(AstItem::Indent(if count > self.last_space_or_tab_count {
-            //         Indent::Increase
-            //     } else if  count < self.last_space_or_tab_count {
-            //         Indent::Decrease
-            //     } else if count == self.last_space_or_tab_count {
-            //         Indent::NoContest
-            //     } else {
-            //         panic!("Shouldnt be possible");
-            //     }));
-            // }
             '🦀' => {
                 assert!(self.input.next().is_some());
                 let Some(next) = self.input.peek() else {
@@ -218,7 +199,7 @@ where
                     // to lower the module path from lexer to parser as the lexer also handles identifiers, and strings
                     // both "special" cases
                     let mut path_segments =
-                        vec![Box::new(AstItem::Identifier(Cow::Owned(temp_str)))];
+                        vec![Box::new(AstItem::Identifier(temp_str))];
                     while let Some(next) = self.input.peek() {
                         let next = next.to_owned();
                         let Some(determined) = self.determine(next) else {
@@ -232,7 +213,7 @@ where
                     }
                     return Some(AstItem::ModulePath(path_segments));
                 }
-                return Some(AstItem::Identifier(Cow::Owned(temp_str)));
+                return Some(AstItem::Identifier(temp_str));
             }
         }
     }
@@ -271,8 +252,13 @@ fn main() {
     println!("{:#?}", parser.ret);
 
     unsafe {
-        let mut cg = CodeGen::init(parser.ret);
-        // cg.generate_all().unwrap();
+        let mut cg = CodeGen::init(
+            parser.ret,
+            CodeGenOptions {
+                allow_no_main_func: false,
+            },
+        );
+        cg.generate_all().unwrap();
         // cg.print();
     }
 }

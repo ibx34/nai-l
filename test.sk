@@ -1,5 +1,5 @@
-return_the_input :: named str -> str = named
+return_the_input :: named std.str -> std.str = named
 
-🦀main = 
-    let hello_name :: str = (return_the_input "Hello, World?") in
-    (std.print hello_name)
+//🦀main = 
+//    let hello_name :: str = (return_the_input "Hello, World?") in
+//    (std.print hello_name)
