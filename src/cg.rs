@@ -11,11 +11,12 @@ use llvm_sys::{
         LLVMBuildCall2, LLVMBuildGEP2, LLVMBuildLoad2, LLVMBuildRet, LLVMBuildRetVoid,
         LLVMBuildStore, LLVMConstInt, LLVMConstNull, LLVMConstString, LLVMConstStringInContext,
         LLVMContextCreate, LLVMCreateBasicBlockInContext, LLVMCreateBuilderInContext,
-        LLVMFunctionType, LLVMGetElementType, LLVMGetPointerAddressSpace, LLVMGetTypeByName2,
-        LLVMGetTypeContext, LLVMInt32Type, LLVMInt32TypeInContext, LLVMInt8Type,
-        LLVMInt8TypeInContext, LLVMModuleCreateWithNameInContext, LLVMPointerType,
-        LLVMPointerTypeInContext, LLVMPointerTypeIsOpaque, LLVMPositionBuilderAtEnd,
-        LLVMPrintModuleToFile, LLVMSetIsInBounds, LLVMTypeOf, LLVMVoidType,
+        LLVMFunctionType, LLVMGetElementType, LLVMGetParam, LLVMGetParams,
+        LLVMGetPointerAddressSpace, LLVMGetTypeByName2, LLVMGetTypeContext, LLVMInt32Type,
+        LLVMInt32TypeInContext, LLVMInt8Type, LLVMInt8TypeInContext,
+        LLVMModuleCreateWithNameInContext, LLVMPointerType, LLVMPointerTypeInContext,
+        LLVMPointerTypeIsOpaque, LLVMPositionBuilderAtEnd, LLVMPrintModuleToFile,
+        LLVMSetIsInBounds, LLVMSetValueName2, LLVMTypeOf, LLVMVoidType,
     },
     prelude::{
         LLVMBasicBlockRef, LLVMBuilderRef, LLVMContextRef, LLVMModuleRef, LLVMTypeRef, LLVMValueRef,
@@ -47,6 +48,7 @@ pub struct DefinedFunction<'a> {
     pub name: &'a str,
     pub params: Vec<DefinedFunctionParam>,
     pub ret: LLVMTypeRef,
+    pub r#fn: LLVMValueRef,
     pub entry: LLVMBasicBlockRef,
 }
 
@@ -241,16 +243,21 @@ impl<'a> CodeGen<'a> {
                     name,
                     params,
                     ret,
+                    r#fn,
                     entry,
                 }) = ctx
                 else {
                     panic!("Expected a the InFunction variant of GenerateContext");
                 };
                 // This case handles identifiers in a function. First it looks at the params.
-                let matching_params = params.into_iter().find(|e| {
-                    e.name.is_some() && e.name.as_ref().unwrap() == &ident
-                });
-                println!("{:?}", matching_params);
+                let matching_params = params
+                    .into_iter()
+                    .find(|e| e.name.is_some() && e.name.as_ref().unwrap() == &ident);
+                if let Some(matching_params) = matching_params {
+                    LLVMPositionBuilderAtEnd(self.builder, entry);
+                    LLVMBuildRet(self.builder, LLVMGetParam(r#fn, 0));
+                    return Ok(())
+                }
             }
             Node::Expr(Expr::FunctionAssignment {
                 visibility,
@@ -268,9 +275,10 @@ impl<'a> CodeGen<'a> {
                         let Expr::TypeParam { has_name, ret } = unboxed.to_owned() else {
                             panic!("Expected type param")
                         };
-                        let Ok(ModuleItemLookupRes::Type(r#type)) =
-                            self.get_module_item(GetModuleItemContext::Type, *(ret.unwrap().to_owned()))
-                        else {
+                        let Ok(ModuleItemLookupRes::Type(r#type)) = self.get_module_item(
+                            GetModuleItemContext::Type,
+                            *(ret.unwrap().to_owned()),
+                        ) else {
                             panic!("Expected a type to be in the tpye list...");
                         };
                         let name = if let Some(has_name) = has_name {
@@ -291,9 +299,19 @@ impl<'a> CodeGen<'a> {
                     .iter()
                     .map(|e| e.ty)
                     .collect::<Vec<LLVMTypeRef>>();
-                let new_func_ty = LLVMFunctionType(ret_type, only_llvmty.as_mut_ptr(), only_llvmty.len().try_into().unwrap(), 0);
+                let new_func_ty = LLVMFunctionType(
+                    ret_type,
+                    only_llvmty.as_mut_ptr(),
+                    only_llvmty.len().try_into().unwrap(),
+                    0,
+                );
                 let new_func = LLVMAddFunction(cmod, cstr!(func_name.as_bytes()), new_func_ty);
+
+                let name = b"named";
+                LLVMSetValueName2(LLVMGetParam(new_func, 0), name.as_ptr() as *const i8, name.len());
+
                 let entry = LLVMAppendBasicBlock(new_func, cstr!("entry"));
+                self.print();
 
                 self.cursor.next();
                 _ = self.generate(
@@ -302,11 +320,10 @@ impl<'a> CodeGen<'a> {
                         name: &func_name,
                         params: func_types,
                         ret: ret_type,
+                        r#fn: new_func,
                         entry,
                     }),
-                )?;
-                self.print();
-                todo!()
+                )?
             }
             _ => todo!(),
         }
