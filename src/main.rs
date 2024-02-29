@@ -259,6 +259,7 @@ fn main() {
             },
         );
         cg.generate_all().unwrap();
-        // cg.print();
+        cg.print();
+        println!("{cg:#?}");
     }
 }

@@ -1,8 +1,13 @@
-use std::{borrow::{Borrow, Cow}, collections::HashMap, hash::Hash, net::UdpSocket};
+use std::{
+    borrow::{Borrow, Cow},
+    collections::HashMap,
+    hash::Hash,
+    net::UdpSocket,
+};
 
 use llvm_sys::orc2::ee;
 
-use crate::{utils::Cursor, AstItem, Keywords, AST};
+use crate::{utils::Cursor, AstItem, Indent, Keywords, AST};
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Node {
@@ -159,9 +164,12 @@ impl<'a> Parser<'a> {
                                 break;
                             };
                             let peeked = peeked.to_owned();
-                            if matches!(peeked, AstItem::Identifier(_) | AstItem::ModulePath { .. }) {
+                            if matches!(peeked, AstItem::Identifier(_) | AstItem::ModulePath { .. })
+                            {
                                 type_list.push(Box::new(Expr::TypeParam {
-                                    has_name: Some(Box::new(Expr::Identifier(identifier.to_owned()))),
+                                    has_name: Some(Box::new(Expr::Identifier(
+                                        identifier.to_owned(),
+                                    ))),
                                     ret: self.parse_expr(peeked).map(|e| Box::new(e)),
                                 }));
                                 continue;
@@ -177,7 +185,7 @@ impl<'a> Parser<'a> {
                                 ret: Some(Box::new(a)),
                             }));
                         }
-                        _ => panic!("Unsupported in type list")
+                        _ => panic!("Unsupported in type list"),
                     }
                 }
             }
@@ -232,7 +240,7 @@ impl<'a> Parser<'a> {
     pub fn parse_expr(&mut self, parse: &'a AstItem<'a>) -> Option<Expr> {
         match parse {
             a @ AstItem::OpenParenthesis => self.parse_function_call(a),
-            a @ AstItem::Identifier(ident) => {   
+            a @ AstItem::Identifier(ident) | a @ AstItem::UseOfProtectedIdentifier(ident) => {
                 let protected = matches!(a, AstItem::UseOfProtectedIdentifier(_))
                     && crate::RESERVED_KEYWORDS.contains(&ident.as_str());
                 let pass_argument_check = if protected {

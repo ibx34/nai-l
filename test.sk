@@ -1,5 +1,8 @@
 return_the_input :: named std.str -> std.str = named
 
-//🦀main = 
-//    let hello_name :: str = (return_the_input "Hello, World?") in
-//    (std.print hello_name)
+🦀main = 
+    let hello_name :: std.str = (return_the_input "Hello, world!") in
+    let second_hello_name :: std.str = (return_the_input "why am I cut off") in
+    let third_hello_name :: std.str = (return_the_input "why am I cut off2????") in
+    let fourth_hello_name :: std.str = (return_the_input "why am I cut off3????") in
+    (printf "%s" hello_name)
