@@ -129,7 +129,7 @@ pub struct BlockAssignment {
     pub value: LLVMValueRef,
     pub ty: LLVMTypeRef,
     pub original_val: Option<LLVMValueRef>,
-    pub block_level: usize
+    pub block_level: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -361,15 +361,13 @@ impl<'a> CodeGen<'a> {
                                         value: new_val,
                                         ty: assignment.1.ty,
                                         original_val: Some(assignment.1.value),
-                                        block_level: assignment.1.block_level + 1
+                                        block_level: assignment.1.block_level + 1,
                                     },
                                 );
                             }
                             _ => todo!(),
                         }
                     }
-
-                    println!("Updated ... {:#?}", self.cblock);
                     LLVMPositionBuilderAtEnd(self.builder, new_in_block);
                 }
                 let be_in: GenerateResult = self.generate(Node::Expr(*be_in.to_owned()), ctx)?;
@@ -412,7 +410,12 @@ impl<'a> CodeGen<'a> {
                 let alloca: *mut llvm_sys::LLVMValue =
                     LLVMBuildAlloca(builder, ty, cstr!(left.to_owned()));
                 LLVMBuildStore(builder, ret, alloca);
-                let assignment = BlockAssignment { value: alloca, ty, original_val: None, block_level: 0 };
+                let assignment = BlockAssignment {
+                    value: alloca,
+                    ty,
+                    original_val: None,
+                    block_level: 0,
+                };
 
                 let cblock = self.cblock.as_mut().unwrap();
                 cblock.assignments.insert(left, assignment);
@@ -505,49 +508,32 @@ impl<'a> CodeGen<'a> {
                     is_let_in: false,
                 });
             }
-            Node::Expr(Expr::Identifier(ident)) => match ctx {
-                GenerateContext::InFunction(DefinedFunction {
-                    name,
-                    params,
-                    ret,
-                    r#fn,
-                    entry,
-                }) => {
+            Node::Expr(Expr::Identifier(ident)) => {
+                if let GenerateContext::InFunction(DefinedFunction { params, r#fn, .. }) = ctx {
+                    println!("{ident:?} in function??");
                     let matching_params = params
                         .into_iter()
                         .enumerate()
                         .find(|e| e.1.name.is_some() && e.1.name.as_ref().unwrap() == &ident);
-                    if let Some(matching_params) = matching_params
-                        && let Some(entry) = entry
-                    {
+
+                    if let Some(matching_params) = matching_params {
                         return Ok(GenerateResult {
                             val: Some(LLVMGetParam(r#fn, matching_params.0.try_into().unwrap())),
                             is_let_in: false,
                         });
-                    } else if let Some(cblock) = &self.cblock
-                        && let Some(in_block) = cblock.assignments.get(&ident)
-                    {
-                        let in_block = in_block.to_owned();
-                        let kind = LLVMGetTypeKind(in_block.ty);
-
-                        // let ret = match kind {
-                        //     llvm_sys::LLVMTypeKind::LLVMPointerTypeKind => LLVMBuildLoad2(
-                        //         self.builder,
-                        //         in_block.ty,
-                        //         in_block.value,
-                        //         cstr!(format!("loaded_ret_for_identifier_{}", ident.to_string())),
-                        //     ),
-                        //     _ => in_block.value,
-                        // };
-                        println!("{:?} is assigned to {:?}", ident, in_block.value);
-                        return Ok(GenerateResult {
-                            val: Some(in_block.value),
-                            is_let_in: false,
-                        });
                     }
                 }
-                _ => unreachable!(),
-            },
+
+                if let Some(cblock) = &self.cblock
+                    && let Some(in_block) = cblock.assignments.get(&ident)
+                {
+                    let in_block = in_block.to_owned();
+                    return Ok(GenerateResult {
+                        val: Some(in_block.value),
+                        is_let_in: false,
+                    });
+                }
+            }
             Node::Expr(Expr::FunctionAssignment {
                 visibility,
                 left,
